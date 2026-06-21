@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0d12;
+  --surface: #141821;
+  --surface-2: #1c2230;
+  --border: #2a3242;
+  --foreground: #e7ecf3;
+  --muted: #8a93a6;
+  --accent: #f59e0b; /* hop amber */
+  --waiting: #f97316; /* interrupt orange */
+  --running: #22c55e; /* agent running green */
+  --blocked: #64748b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-waiting: var(--waiting);
+  --color-running: var(--running);
+  --color-blocked: var(--blocked);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* iOS: prevent zoom-on-focus for text inputs */
+input,
+select,
+textarea {
+  font-size: max(16px, 1em);
+}
+
+@keyframes hop-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(249, 115, 22, 0);
+  }
+}
+
+.waiting-glow {
+  animation: hop-pulse 1.6s ease-out infinite;
+}
+
+@keyframes run-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.running-blink {
+  animation: run-blink 1.2s ease-in-out infinite;
+}

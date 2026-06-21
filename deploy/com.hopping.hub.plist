@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hopping.hub</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/hop/project-hopping/node_modules/.bin/tsx</string>
+    <string>/Users/hop/project-hopping/hub/server.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hop/project-hopping</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOPPING_DB</key>
+    <string>/Users/hop/project-hopping/data/hopping.db</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/hop/project-hopping/data/hub.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hop/project-hopping/data/hub.err.log</string>
+</dict>
+</plist>

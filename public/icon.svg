@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0b0d12"/>
+  <!-- three hop arcs -->
+  <g fill="none" stroke="#f59e0b" stroke-width="14" stroke-linecap="round" opacity="0.9">
+    <path d="M104 320 q44 -88 88 0"/>
+    <path d="M212 320 q44 -110 88 0"/>
+    <path d="M320 320 q44 -132 88 0"/>
+  </g>
+  <!-- landing dots -->
+  <g fill="#f97316">
+    <circle cx="104" cy="332" r="20"/>
+    <circle cx="212" cy="332" r="20"/>
+    <circle cx="320" cy="332" r="20"/>
+    <circle cx="408" cy="332" r="22" fill="#f59e0b"/>
+  </g>
+  <!-- ground line -->
+  <rect x="92" y="356" width="328" height="10" rx="5" fill="#2a3242"/>
+</svg>
