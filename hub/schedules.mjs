@@ -1,8 +1,10 @@
 // Background notification timers: the cycle nudge and the daily neglect digest.
 // Checks once a minute; each class is independently suppressible in settings.
 
-import { getProjectsWithTally, getSettings, setLastNeglectFired } from "../lib/db.ts";
+import { getProjectsWithTally, getSettings, setLastNeglectFired, inQuietHours } from "../lib/db.ts";
 import { rankProjects } from "../lib/rankProjects.ts";
+import { slackPost, desktop } from "./notify.mjs";
+import { standupCard } from "./cards.mjs";
 
 const DAY = 86_400_000;
 const nudgedFor = new Map(); // projectId -> status_since we already nudged (avoid repeats)
@@ -30,31 +32,23 @@ export function runSchedulesOnce(notify) {
     }
   }
 
-  // 2. Daily neglect digest at the configured hour, once per day.
+  // 2. Daily actionable standup at the configured hour, once per day.
   if (s.notify_neglect) {
     const d = new Date(now);
     const today = ymd(d);
     if (d.getHours() === s.neglect_hour && s.last_neglect_fired !== today) {
       setLastNeglectFired(today); // guard first so we never double-fire
-      const cutoff = now - s.neglect_days * DAY;
-      const neglected = projects
-        .filter((p) => !p.archived && p.id !== "unmapped" && (p.last_touched_at ?? 0) < cutoff)
-        .sort((a, b) => (a.last_touched_at ?? 0) - (b.last_touched_at ?? 0));
-      if (neglected.length) {
-        const list = neglected
-          .slice(0, 8)
-          .map((p) => {
-            const ago = p.last_touched_at
-              ? `${Math.floor((now - p.last_touched_at) / DAY)}d`
-              : "never";
-            return `• ${p.name} — ${ago}`;
-          })
-          .join("\n");
-        const { next } = rankProjects(projects);
-        notify(
-          "neglect",
-          `🐢 Neglected (≥${s.neglect_days}d untouched):\n${list}\n\nhop next → ${next ? next.name : "—"}`,
-        );
+      const active = projects.filter((p) => !p.archived && p.id !== "unmapped");
+      const { next, ordered } = rankProjects(projects);
+      const neglected = active.filter(
+        (p) => (p.last_touched_at ?? 0) < now - s.neglect_days * DAY,
+      );
+      desktop(`🐇 Standup: hop next → ${next ? next.name : "—"} · ${neglected.length} neglected`);
+      if (s.slack_neglect && !inQuietHours(s, now)) {
+        slackPost({
+          text: `🐇 Hopping standup — hop next → ${next ? next.name : "—"}`,
+          blocks: standupCard({ projects: ordered.filter((p) => p.id !== "unmapped"), next }),
+        }).catch(() => {});
       }
     }
   }

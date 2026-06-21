@@ -8,6 +8,7 @@ function isPublic(p: string): boolean {
   return (
     p.startsWith("/login") ||
     p.startsWith("/api/auth") ||
+    p.startsWith("/api/slack") || // Slack webhooks authenticate by signature, not cookie
     p === "/manifest.json" ||
     p === "/sw.js" ||
     p.startsWith("/icon") ||

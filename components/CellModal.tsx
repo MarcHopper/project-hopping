@@ -10,7 +10,7 @@ export default function CellModal({
 }: {
   project: Project;
   onClose: () => void;
-  onAction: (action: "worked" | "skip", brief?: string) => void;
+  onAction: (action: "worked" | "skip" | "mute" | "unmute", brief?: string) => void;
 }) {
   const [working, setWorking] = useState(false);
   const [brief, setBrief] = useState(project.last_brief ?? "");
@@ -45,6 +45,12 @@ export default function CellModal({
               className="rounded-xl border border-border bg-surface-2 px-4 py-3 font-medium text-muted hover:text-foreground"
             >
               Nothing here, skip
+            </button>
+            <button
+              onClick={() => onAction(project.muted ? "unmute" : "mute")}
+              className="rounded-xl border border-border px-4 py-2 text-sm text-muted hover:text-foreground"
+            >
+              {project.muted ? "🔕 Muted — tap to unmute Slack" : "🔔 Mute this project's Slack alerts"}
             </button>
           </div>
         ) : (

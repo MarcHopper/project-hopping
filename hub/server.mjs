@@ -12,11 +12,20 @@ import {
   applyEvent,
   getProjectsWithTally,
   getSettings,
+  getSession,
+  listSessions,
   setFocusedProjectByPath,
+  setSessionResult,
+  setSessionThreadTs,
+  inQuietHours,
+  isProjectSilenced,
 } from "../lib/db.ts";
 import { rankProjects } from "../lib/rankProjects.ts";
 import { startGitWatch } from "./gitwatch.mjs";
-import { notify } from "./notify.mjs";
+import { notify, desktop, slackPost, slackReply } from "./notify.mjs";
+import { waitingCard } from "./cards.mjs";
+import { readLastResult } from "./transcript.mjs";
+import { userIsActive } from "./presence.mjs";
 import { startMirror, ingestQueuedActions } from "./mirror.mjs";
 
 const HOST = "127.0.0.1";
@@ -30,11 +39,63 @@ function log(...a) {
 // Both the HTTP handler and the git watcher call this.
 function ingest(input) {
   const result = applyEvent(input);
-  if (result.becameWaiting && getSettings().notify_interrupt) {
-    notify("interrupt", `⚡ ${result.name} is waiting on you`, result.name);
+
+  // Enrich a chat that just went waiting with its last result (for the grid + Slack).
+  let snippet = "";
+  if (result.sessionBecameWaiting && result.sessionId) {
+    try {
+      const r = readLastResult(result.sessionId);
+      if (r.text) {
+        setSessionResult(result.sessionId, r.text);
+        snippet = r.summary;
+      }
+    } catch {
+      /* transcript unreadable — fine */
+    }
   }
+
+  // Fire on a project OR a single-chat transition into waiting (per-chat alert).
+  if ((result.becameWaiting || result.sessionBecameWaiting) && getSettings().notify_interrupt) {
+    fireInterrupt(result, snippet).catch(() => {}); // async, never blocks ingest
+  }
+
   mirrorNow();
   return result;
+}
+
+// Desktop always; Slack only when it earns it (the "balance"): class enabled,
+// not the unmapped catch-all, not muted/snoozed, not quiet hours, and — unless
+// disabled — not while you're actively at the Mac. Each chat lives in a thread.
+async function fireInterrupt(result, snippet) {
+  const s = getSettings();
+  const who =
+    result.sessionName && result.sessionName !== result.name
+      ? `${result.name} · ${result.sessionName}`
+      : result.name;
+  desktop(`⚡ ${who} is waiting on you`);
+
+  const allowSlack =
+    s.slack_interrupt &&
+    result.projectId !== "unmapped" &&
+    !isProjectSilenced(result.projectId) &&
+    !inQuietHours(s) &&
+    !(s.active_suppress && userIsActive());
+  if (!allowSlack) return;
+
+  const blocks = waitingCard({
+    projectName: result.name,
+    sessionName: result.sessionName,
+    projectId: result.projectId,
+    sessionId: result.sessionId,
+    snippet,
+  });
+  const sess = result.sessionId ? getSession(result.sessionId) : null;
+  if (sess && sess.slack_thread_ts) {
+    await slackReply(sess.slack_thread_ts, { text: `⚡ ${who} is waiting again`, blocks });
+  } else {
+    const ts = await slackPost({ text: `⚡ ${who} is waiting on you`, blocks });
+    if (ts && result.sessionId) setSessionThreadTs(result.sessionId, ts);
+  }
 }
 
 // Push the current grid snapshot to the cloud (no-op if cloud not configured).
@@ -73,7 +134,12 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/state") {
       const projects = getProjectsWithTally();
-      return send(res, 200, { projects, ...rankProjects(projects), settings: getSettings() });
+      return send(res, 200, {
+        projects,
+        ...rankProjects(projects),
+        sessions: listSessions(),
+        settings: getSettings(),
+      });
     }
 
     if (req.method === "POST" && url.pathname === "/event") {

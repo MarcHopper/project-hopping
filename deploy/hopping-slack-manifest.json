@@ -1,0 +1,30 @@
+{
+  "display_information": {
+    "name": "Hopping",
+    "description": "Which project should I hop to next? Alerts + remote control for your AI-agent chats.",
+    "background_color": "#0b0d12"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hopping",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": ["chat:write", "im:history", "im:write"]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://project-hopping.vercel.app/api/slack/interactivity"
+    },
+    "event_subscriptions": {
+      "request_url": "https://project-hopping.vercel.app/api/slack/events",
+      "bot_events": ["message.im"]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false
+  }
+}

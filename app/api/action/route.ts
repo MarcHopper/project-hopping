@@ -24,11 +24,15 @@ export async function POST(req: Request) {
   if (CLOUD) {
     // Vercel: queue the action; the local hub drains + applies it.
     const { cloudPushAction } = await import("@/lib/cloud");
-    await cloudPushAction({ projectId, action, brief });
+    if (action === "mute" || action === "unmute") {
+      await cloudPushAction({ kind: action, projectId });
+    } else {
+      await cloudPushAction({ projectId, action, brief });
+    }
     return NextResponse.json({ ok: true, queued: true });
   }
 
-  const { applyEvent } = await import("@/lib/db");
+  const { applyEvent, setProjectMuted } = await import("@/lib/db");
   switch (action) {
     case "worked":
     case "hop":
@@ -39,6 +43,12 @@ export async function POST(req: Request) {
       break;
     case "brief":
       applyEvent({ projectId, type: "brief", payload: { text: brief ?? "" } });
+      break;
+    case "mute":
+      setProjectMuted(projectId, true);
+      break;
+    case "unmute":
+      setProjectMuted(projectId, false);
       break;
     default:
       return NextResponse.json({ ok: false, error: "unknown action" }, { status: 400 });

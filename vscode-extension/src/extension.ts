@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { HoppingTree } from "./tree";
 
 function cfg() {
   const c = vscode.workspace.getConfiguration("hopping");
@@ -87,6 +88,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("hopping.openGrid", () => {
       vscode.env.openExternal(vscode.Uri.parse("http://localhost:3000"));
     }),
+  );
+
+  // Sidebar TreeView — the visible hop grid inside VS Code.
+  const tree = new HoppingTree(() => cfg().port);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("hopping.grid", tree),
+    vscode.commands.registerCommand("hopping.refresh", () => tree.refresh()),
+    { dispose: () => tree.dispose() },
   );
 
   // Status bar: shows the focused project's brief/tally; click opens the grid.

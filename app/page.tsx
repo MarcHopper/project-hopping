@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Project, TallyMode, Settings } from "@/lib/types";
+import type { Project, TallyMode, Settings, Session } from "@/lib/types";
 import type { Column } from "@/lib/cycles";
 import HopBanner from "@/components/HopBanner";
 import Grid from "@/components/Grid";
+import OpenChats from "@/components/OpenChats";
 import CellModal from "@/components/CellModal";
 import SettingsBar from "@/components/SettingsBar";
+import AlertsPanel from "@/components/AlertsPanel";
 import ProjectEditor from "@/components/ProjectEditor";
 
 interface StateResponse {
@@ -14,6 +16,7 @@ interface StateResponse {
   ordered: Project[];
   next: Project | null;
   columns: Column[];
+  sessions: Session[];
   settings: Settings & { windowLabel: string };
   generatedAt: number;
 }
@@ -34,6 +37,7 @@ export default function Page() {
   const [online, setOnline] = useState(true);
   const [modal, setModal] = useState<Project | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
   const failures = useRef(0);
 
   const load = useCallback(async () => {
@@ -56,10 +60,10 @@ export default function Page() {
     return () => clearInterval(id);
   }, [load]);
 
-  async function doAction(action: "worked" | "skip", brief?: string) {
+  async function doAction(action: "worked" | "skip" | "mute" | "unmute", brief?: string) {
     if (!modal) return;
     const target = modal;
-    setModal(null);
+    if (action !== "mute" && action !== "unmute") setModal(null);
     await post("/api/action", { projectId: target.id, action, brief });
     await load();
   }
@@ -74,7 +78,7 @@ export default function Page() {
     await load();
   }
 
-  async function setNotify(patch: Record<string, boolean>) {
+  async function setNotify(patch: Record<string, boolean | number>) {
     await post("/api/settings", patch, "PATCH");
     await load();
   }
@@ -103,16 +107,19 @@ export default function Page() {
           mode={state?.settings.tally_mode ?? "rolling7d"}
           windowLabel={state?.settings.windowLabel ?? ""}
           hopsInWindow={hopsInWindow}
-          notifyInterrupt={state?.settings.notify_interrupt ?? true}
-          notifyNudge={state?.settings.notify_nudge ?? false}
-          notifyNeglect={state?.settings.notify_neglect ?? true}
           canEdit={!CLOUD}
           onMode={setMode}
           onReset={resetTallies}
-          onNotify={setNotify}
+          onOpenAlerts={() => setAlertsOpen(true)}
           onOpenEditor={() => setEditorOpen(true)}
         />
       </div>
+
+      {state && state.sessions.length > 0 && (
+        <div className="mb-4">
+          <OpenChats sessions={state.sessions} />
+        </div>
+      )}
 
       {state ? (
         <Grid
@@ -134,6 +141,9 @@ export default function Page() {
 
       {modal && (
         <CellModal project={modal} onClose={() => setModal(null)} onAction={doAction} />
+      )}
+      {alertsOpen && state && (
+        <AlertsPanel settings={state.settings} onNotify={setNotify} onClose={() => setAlertsOpen(false)} />
       )}
       {editorOpen && state && !CLOUD && (
         <ProjectEditor

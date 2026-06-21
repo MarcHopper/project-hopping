@@ -11,6 +11,7 @@ const EMPTY = {
   ordered: [],
   next: null,
   columns: [{ cells: {}, complete: false }],
+  sessions: [],
   settings: {
     tally_mode: "rolling7d",
     tally_reset_at: 0,
@@ -21,6 +22,12 @@ const EMPTY = {
     neglect_hour: 9,
     neglect_days: 3,
     last_neglect_fired: "",
+    quiet_start: -1,
+    quiet_end: -1,
+    slack_interrupt: true,
+    slack_nudge: false,
+    slack_neglect: true,
+    active_suppress: true,
     windowLabel: "last 7 days",
   },
   generatedAt: 0,
@@ -35,7 +42,7 @@ export async function GET() {
   }
 
   // Local: read SQLite directly (better-sqlite3 only ever imported here).
-  const { getProjectsWithTally, getTouchEvents, getSettings } = await import("@/lib/db");
+  const { getProjectsWithTally, getTouchEvents, getSettings, listSessions } = await import("@/lib/db");
   const { rankProjects } = await import("@/lib/rankProjects");
   const { deriveColumns } = await import("@/lib/cycles");
   const { tallyWindowLabel } = await import("@/lib/tally");
@@ -51,6 +58,7 @@ export async function GET() {
     ordered,
     next,
     columns,
+    sessions: listSessions(),
     settings: { ...settings, windowLabel: tallyWindowLabel(settings.tally_mode) },
     generatedAt: Date.now(),
   });

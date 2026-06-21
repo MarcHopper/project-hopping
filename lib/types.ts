@@ -30,6 +30,8 @@ export interface ProjectRow {
   uncommitted: number; // count of uncommitted changes (Phase 3 git watcher)
   status_since: number | null; // epoch ms the current status began (for cycle nudges)
   time_cap_min: number | null; // per-project minutes-before-nudge cap (Phase 4)
+  muted: boolean; // suppress this project's Slack alerts (Phase 7)
+  snooze_until: number | null; // epoch ms; suppress alerts until then (Phase 7)
 }
 
 // A project as handed to the UI / rankProjects — same as the row plus the
@@ -56,9 +58,33 @@ export interface Settings {
   neglect_hour: number; // local hour (0-23) the digest fires
   neglect_days: number; // a project untouched >= this many days is "neglected"
   last_neglect_fired: string; // YYYY-MM-DD guard so the digest fires once/day
+  // Phase 7 — Slack control
+  quiet_start: number; // hour 0-23, -1 = off
+  quiet_end: number;
+  slack_interrupt: boolean; // route interrupt alerts to Slack
+  slack_nudge: boolean;
+  slack_neglect: boolean;
+  active_suppress: boolean; // while active at the Mac, desktop-only (no Slack)
 }
 
 export interface RankResult {
   next: Project | null;
   ordered: Project[];
+}
+
+// One Claude Code chat/session. Tracked separately from the project rollup so
+// the "open chats" view + per-chat alerts + the Slack-thread-per-chat work.
+export type SessionStatus = "running" | "waiting" | "ended";
+
+export interface Session {
+  session_id: string;
+  project_id: string;
+  project_name?: string; // joined for display
+  cwd: string;
+  status: SessionStatus;
+  name: string;
+  last_activity: number | null; // epoch ms
+  last_result: string; // last assistant message text (from the transcript)
+  slack_thread_ts: string; // the Slack thread this chat lives in ("" = none yet)
+  started_at: number;
 }

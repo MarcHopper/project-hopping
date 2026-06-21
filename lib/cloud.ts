@@ -51,11 +51,17 @@ export async function cloudGetState<T = unknown>(): Promise<T | null> {
 }
 
 export interface QueuedAction {
+  // phone-app shape (back-compat)
   projectId?: string;
   action?: string; // worked | skip | hop | brief
   brief?: string;
-  // settings changes can ride the same queue:
   settings?: Record<string, unknown>;
+  // Slack interactive shape (Phase 7/8): discriminated by `kind`
+  kind?: "hopped" | "snooze" | "mute" | "unmute" | "continue" | "status";
+  sessionId?: string;
+  minutes?: number;
+  prompt?: string;
+  thread_ts?: string;
 }
 
 export async function cloudPushAction(action: QueuedAction): Promise<void> {

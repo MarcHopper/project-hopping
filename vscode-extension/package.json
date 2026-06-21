@@ -10,10 +10,24 @@
   "main": "./dist/extension.js",
   "activationEvents": ["onStartupFinished"],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "hopping", "title": "Hopping", "icon": "media/rocket.svg" }
+      ]
+    },
+    "views": {
+      "hopping": [{ "id": "hopping.grid", "name": "Hop grid" }]
+    },
     "commands": [
       { "command": "hopping.markWaiting", "title": "Hopping: Mark current project as waiting on you" },
-      { "command": "hopping.openGrid", "title": "Hopping: Open the hop grid" }
+      { "command": "hopping.openGrid", "title": "Hopping: Open the hop grid" },
+      { "command": "hopping.refresh", "title": "Hopping: Refresh", "icon": "$(refresh)" }
     ],
+    "menus": {
+      "view/title": [
+        { "command": "hopping.refresh", "when": "view == hopping.grid", "group": "navigation" }
+      ]
+    },
     "configuration": {
       "title": "Hopping",
       "properties": {

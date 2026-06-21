@@ -43,3 +43,19 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+
+-- One Claude Code chat/session (Phase 6). Tracked separately from the project
+-- rollup so each open chat is visible, alertable, and gets its own Slack thread.
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id      TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id),
+  cwd             TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'running', -- running | waiting | ended
+  name            TEXT NOT NULL DEFAULT '',
+  last_activity   INTEGER,
+  last_result     TEXT NOT NULL DEFAULT '',
+  slack_thread_ts TEXT NOT NULL DEFAULT '',
+  started_at      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);

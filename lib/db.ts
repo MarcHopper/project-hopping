@@ -6,12 +6,15 @@
 import Database from "better-sqlite3";
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import type {
   AppEvent,
   EventType,
   Project,
   ProjectRow,
   ProjectStatus,
+  Session,
+  SessionStatus,
   Settings,
   TallyMode,
 } from "./types";
@@ -37,8 +40,16 @@ CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   tally_mode TEXT NOT NULL DEFAULT 'rolling7d', tally_reset_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+  cwd TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'running', name TEXT NOT NULL DEFAULT '',
+  last_activity INTEGER, last_result TEXT NOT NULL DEFAULT '', slack_thread_ts TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);
 `;
 
 type DB = Database.Database;
@@ -89,6 +100,15 @@ function migrate(db: DB): void {
     "ALTER TABLE settings ADD COLUMN neglect_hour INTEGER NOT NULL DEFAULT 9",
     "ALTER TABLE settings ADD COLUMN neglect_days INTEGER NOT NULL DEFAULT 3",
     "ALTER TABLE settings ADD COLUMN last_neglect_fired TEXT NOT NULL DEFAULT ''",
+    // Phase 7: Slack control
+    "ALTER TABLE settings ADD COLUMN quiet_start INTEGER NOT NULL DEFAULT -1", // hour 0-23, -1=off
+    "ALTER TABLE settings ADD COLUMN quiet_end INTEGER NOT NULL DEFAULT -1",
+    "ALTER TABLE settings ADD COLUMN slack_interrupt INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE settings ADD COLUMN slack_nudge INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE settings ADD COLUMN slack_neglect INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE settings ADD COLUMN active_suppress INTEGER NOT NULL DEFAULT 1", // desktop-only while active
+    "ALTER TABLE projects ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE projects ADD COLUMN snooze_until INTEGER",
   ];
   for (const sql of alters) {
     try {
@@ -119,6 +139,8 @@ interface RawProject {
   uncommitted: number;
   status_since: number | null;
   time_cap_min: number | null;
+  muted: number;
+  snooze_until: number | null;
 }
 
 function toRow(r: RawProject): ProjectRow {
@@ -136,6 +158,8 @@ function toRow(r: RawProject): ProjectRow {
     uncommitted: r.uncommitted ?? 0,
     status_since: r.status_since ?? null,
     time_cap_min: r.time_cap_min ?? null,
+    muted: !!r.muted,
+    snooze_until: r.snooze_until ?? null,
   };
 }
 
@@ -159,6 +183,12 @@ interface RawSettings {
   neglect_hour: number;
   neglect_days: number;
   last_neglect_fired: string;
+  quiet_start: number;
+  quiet_end: number;
+  slack_interrupt: number;
+  slack_nudge: number;
+  slack_neglect: number;
+  active_suppress: number;
 }
 
 export function getSettings(): Settings {
@@ -175,7 +205,22 @@ export function getSettings(): Settings {
     neglect_hour: r?.neglect_hour ?? 9,
     neglect_days: r?.neglect_days ?? 3,
     last_neglect_fired: r?.last_neglect_fired ?? "",
+    quiet_start: r?.quiet_start ?? -1,
+    quiet_end: r?.quiet_end ?? -1,
+    slack_interrupt: r ? !!r.slack_interrupt : true,
+    slack_nudge: r ? !!r.slack_nudge : false,
+    slack_neglect: r ? !!r.slack_neglect : true,
+    active_suppress: r ? !!r.active_suppress : true,
   };
+}
+
+/** Is `now` inside the quiet-hours window? Handles wrap-around (e.g. 22→7). */
+export function inQuietHours(s: Settings, now = Date.now()): boolean {
+  if (s.quiet_start < 0 || s.quiet_end < 0 || s.quiet_start === s.quiet_end) return false;
+  const h = new Date(now).getHours();
+  return s.quiet_start < s.quiet_end
+    ? h >= s.quiet_start && h < s.quiet_end
+    : h >= s.quiet_start || h < s.quiet_end; // wrap past midnight
 }
 
 /** Projects with their windowed fairness tally attached (for ranking + display). */
@@ -248,6 +293,48 @@ export function resolveProjectByPath(target: string): string {
   return best ?? UNMAPPED_ID;
 }
 
+function slug(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "project"
+  );
+}
+
+/**
+ * Like resolveProjectByPath, but if a REAL absolute path matches nothing, create
+ * a project from the folder basename instead of dumping to `unmapped`. This is
+ * what "kills Unmapped" — Claude Code work auto-appears as its own project.
+ */
+export function resolveOrCreateProjectByPath(target: string): string {
+  if (!target || !target.startsWith("/")) return UNMAPPED_ID;
+  const matched = resolveProjectByPath(target);
+  if (matched !== UNMAPPED_ID) return matched;
+
+  // Don't auto-create a project for the home dir or shallow/system paths
+  // (e.g. a Claude session launched from ~ shouldn't become a "hop" project).
+  const t = target.replace(/\/+$/, "");
+  const home = os.homedir().replace(/\/+$/, "");
+  if (t === home || home.startsWith(t + "/") || t.split("/").length <= 3) {
+    return UNMAPPED_ID;
+  }
+
+  const base = t.split("/").pop() || "project";
+  const existing = new Set(listProjectRows().map((p) => p.id));
+  let id = slug(base);
+  let n = 2;
+  while (existing.has(id)) id = `${slug(base)}-${n++}`;
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO projects (id, name, path, sort_order)
+       VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM projects))`,
+    )
+    .run(id, base, target.replace(/\/+$/, ""));
+  return id;
+}
+
 // ---- the single ingest reducer ------------------------------------------
 
 export interface ApplyInput {
@@ -261,14 +348,19 @@ export interface ApplyResult {
   projectId: string;
   name: string;
   status: ProjectStatus;
-  becameWaiting: boolean; // hub uses this to fire the desktop notification
+  becameWaiting: boolean; // project-level transition into waiting
+  sessionId?: string;
+  sessionName?: string;
+  sessionBecameWaiting: boolean; // THIS chat transitioned into waiting (per-chat alert)
 }
 
 export function applyEvent(input: ApplyInput): ApplyResult {
   const db = getDb();
   const ts = now();
+  // Auto-create a project from a real path (kills 'Unmapped'); pathless → unmapped.
   const projectId =
-    input.projectId ?? resolveProjectByPath(input.path ?? "");
+    input.projectId ??
+    (input.path ? resolveOrCreateProjectByPath(input.path) : UNMAPPED_ID);
   const payload = input.payload ?? {};
 
   db.prepare(
@@ -330,6 +422,9 @@ export function applyEvent(input: ApplyInput): ApplyResult {
       break;
   }
 
+  // Per-session tracking — same ingest, updates the sessions table too.
+  const sess = applySessionEvent(db, ts, projectId, input.type, payload, input.path);
+
   const p = db
     .prepare("SELECT name, status FROM projects WHERE id = ?")
     .get(projectId) as { name: string; status: string } | undefined;
@@ -339,6 +434,69 @@ export function applyEvent(input: ApplyInput): ApplyResult {
     name: p?.name ?? projectId,
     status: (p?.status ?? "idle") as ProjectStatus,
     becameWaiting,
+    sessionId: sess.sessionId,
+    sessionName: sess.sessionName,
+    sessionBecameWaiting: sess.sessionBecameWaiting,
+  };
+}
+
+// Update the per-session row from an event that carries a session_id. Maps the
+// event type to a session status and reports whether THIS chat just became
+// "waiting" (so a 2nd waiting chat in the same folder still alerts).
+function applySessionEvent(
+  db: DB,
+  ts: number,
+  projectId: string,
+  type: EventType,
+  payload: Record<string, unknown>,
+  eventPath?: string,
+): { sessionId?: string; sessionName?: string; sessionBecameWaiting: boolean } {
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : undefined;
+  if (!sessionId) return { sessionBecameWaiting: false };
+
+  const status: SessionStatus | null =
+    type === "agent_waiting"
+      ? "waiting"
+      : type === "agent_running"
+        ? "running"
+        : type === "session_end"
+          ? "ended"
+          : null; // hop/skip/commit/brief don't change session status
+
+  const prev = db
+    .prepare("SELECT status FROM sessions WHERE session_id = ?")
+    .get(sessionId) as { status?: string } | undefined;
+  const name = typeof payload.name === "string" ? payload.name : "";
+  const cwd =
+    (typeof payload.cwd === "string" && payload.cwd) ||
+    (eventPath && eventPath.startsWith("/") ? eventPath : "");
+
+  db.prepare(
+    `INSERT INTO sessions (session_id, project_id, cwd, status, name, last_activity, started_at)
+     VALUES (@sid, @pid, @cwd, @status, @name, @ts, @ts)
+     ON CONFLICT(session_id) DO UPDATE SET
+       project_id = @pid,
+       last_activity = @ts,
+       cwd = CASE WHEN @cwd != '' THEN @cwd ELSE cwd END,
+       name = CASE WHEN @name != '' THEN @name ELSE name END,
+       status = CASE WHEN @status IS NOT NULL THEN @status ELSE status END`,
+  ).run({
+    sid: sessionId,
+    pid: projectId,
+    cwd,
+    status: status ?? "running",
+    name,
+    ts,
+  });
+
+  const row = db
+    .prepare("SELECT name FROM sessions WHERE session_id = ?")
+    .get(sessionId) as { name?: string } | undefined;
+
+  return {
+    sessionId,
+    sessionName: row?.name || sessionId.slice(0, 8),
+    sessionBecameWaiting: status === "waiting" && prev?.status !== "waiting",
   };
 }
 
@@ -434,6 +592,12 @@ const NOTIFY_KEYS = [
   "notify_neglect",
   "neglect_hour",
   "neglect_days",
+  "quiet_start",
+  "quiet_end",
+  "slack_interrupt",
+  "slack_nudge",
+  "slack_neglect",
+  "active_suppress",
 ] as const;
 
 export function updateNotifySettings(
@@ -454,4 +618,95 @@ export function setLastNeglectFired(dateStr: string): void {
 
 export function setProjectTimeCap(id: string, minutes: number | null): void {
   getDb().prepare("UPDATE projects SET time_cap_min = ? WHERE id = ?").run(minutes, id);
+}
+
+export function setProjectMuted(id: string, muted: boolean): void {
+  getDb().prepare("UPDATE projects SET muted = ? WHERE id = ?").run(muted ? 1 : 0, id);
+}
+
+export function setProjectSnooze(id: string, until: number | null): void {
+  getDb().prepare("UPDATE projects SET snooze_until = ? WHERE id = ?").run(until, id);
+}
+
+/** True if a project's Slack alerts are currently suppressed (muted or snoozed). */
+export function isProjectSilenced(id: string): boolean {
+  const r = getDb()
+    .prepare("SELECT muted, snooze_until FROM projects WHERE id = ?")
+    .get(id) as { muted?: number; snooze_until?: number | null } | undefined;
+  if (!r) return false;
+  if (r.muted) return true;
+  if (r.snooze_until && r.snooze_until > Date.now()) return true;
+  return false;
+}
+
+// ---- sessions (per-chat) -------------------------------------------------
+
+interface RawSession {
+  session_id: string;
+  project_id: string;
+  cwd: string;
+  status: string;
+  name: string;
+  last_activity: number | null;
+  last_result: string;
+  slack_thread_ts: string;
+  started_at: number;
+}
+
+function toSession(r: RawSession, projectName?: string): Session {
+  return {
+    session_id: r.session_id,
+    project_id: r.project_id,
+    project_name: projectName,
+    cwd: r.cwd,
+    status: r.status as SessionStatus,
+    name: r.name,
+    last_activity: r.last_activity,
+    last_result: r.last_result,
+    slack_thread_ts: r.slack_thread_ts,
+    started_at: r.started_at,
+  };
+}
+
+/** Open chats (not ended), newest activity first, with project name joined. */
+export function listSessions(): Session[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT s.*, p.name AS project_name
+       FROM sessions s JOIN projects p ON p.id = s.project_id
+       WHERE s.status != 'ended'
+       ORDER BY s.last_activity DESC`,
+    )
+    .all() as (RawSession & { project_name: string })[];
+  return rows.map((r) => toSession(r, r.project_name));
+}
+
+export function getSession(sessionId: string): Session | null {
+  const r = getDb()
+    .prepare("SELECT * FROM sessions WHERE session_id = ?")
+    .get(sessionId) as RawSession | undefined;
+  return r ? toSession(r) : null;
+}
+
+export function getSessionByThreadTs(ts: string): Session | null {
+  const r = getDb()
+    .prepare("SELECT * FROM sessions WHERE slack_thread_ts = ? LIMIT 1")
+    .get(ts) as RawSession | undefined;
+  return r ? toSession(r) : null;
+}
+
+export function setSessionThreadTs(sessionId: string, ts: string): void {
+  getDb().prepare("UPDATE sessions SET slack_thread_ts = ? WHERE session_id = ?").run(ts, sessionId);
+}
+
+export function setSessionResult(sessionId: string, result: string, status?: SessionStatus): void {
+  if (status) {
+    getDb()
+      .prepare("UPDATE sessions SET last_result = ?, status = ?, last_activity = ? WHERE session_id = ?")
+      .run(result, status, now(), sessionId);
+  } else {
+    getDb()
+      .prepare("UPDATE sessions SET last_result = ?, last_activity = ? WHERE session_id = ?")
+      .run(result, now(), sessionId);
+  }
 }

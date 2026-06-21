@@ -5,7 +5,19 @@ export const dynamic = "force-dynamic";
 
 const CLOUD = !!process.env.HOPPING_CLOUD;
 const MODES: TallyMode[] = ["rolling7d", "daily", "weekly", "none"];
-const NOTIFY_KEYS = ["notify_interrupt", "notify_nudge", "notify_neglect", "neglect_hour", "neglect_days"] as const;
+const NOTIFY_KEYS = [
+  "notify_interrupt",
+  "notify_nudge",
+  "notify_neglect",
+  "neglect_hour",
+  "neglect_days",
+  "quiet_start",
+  "quiet_end",
+  "slack_interrupt",
+  "slack_nudge",
+  "slack_neglect",
+  "active_suppress",
+] as const;
 
 export async function GET() {
   if (CLOUD) {
