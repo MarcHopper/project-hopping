@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Project, TallyMode } from "@/lib/types";
+import type { Project, TallyMode, Settings } from "@/lib/types";
 import type { Column } from "@/lib/cycles";
 import HopBanner from "@/components/HopBanner";
 import Grid from "@/components/Grid";
@@ -14,9 +14,12 @@ interface StateResponse {
   ordered: Project[];
   next: Project | null;
   columns: Column[];
-  settings: { tally_mode: TallyMode; tally_reset_at: number; windowLabel: string };
+  settings: Settings & { windowLabel: string };
   generatedAt: number;
 }
+
+// On the Vercel phone deploy, project editing is desktop-only.
+const CLOUD = process.env.NEXT_PUBLIC_HOPPING_CLOUD === "1";
 
 async function post(url: string, body?: unknown, method = "POST") {
   await fetch(url, {
@@ -71,6 +74,11 @@ export default function Page() {
     await load();
   }
 
+  async function setNotify(patch: Record<string, boolean>) {
+    await post("/api/settings", patch, "PATCH");
+    await load();
+  }
+
   const rows = state?.ordered ?? [];
   const waitingCount = rows.filter((p) => p.status === "agent_waiting").length;
   const hopsInWindow = (state?.projects ?? []).reduce((s, p) => s + p.tally, 0);
@@ -95,14 +103,25 @@ export default function Page() {
           mode={state?.settings.tally_mode ?? "rolling7d"}
           windowLabel={state?.settings.windowLabel ?? ""}
           hopsInWindow={hopsInWindow}
+          notifyInterrupt={state?.settings.notify_interrupt ?? true}
+          notifyNudge={state?.settings.notify_nudge ?? false}
+          notifyNeglect={state?.settings.notify_neglect ?? true}
+          canEdit={!CLOUD}
           onMode={setMode}
           onReset={resetTallies}
+          onNotify={setNotify}
           onOpenEditor={() => setEditorOpen(true)}
         />
       </div>
 
       {state ? (
-        <Grid rows={rows} columns={state.columns} nextId={state.next?.id ?? null} onCell={setModal} />
+        <Grid
+          rows={rows}
+          columns={state.columns}
+          nextId={state.next?.id ?? null}
+          focusedId={state.settings.focused_project_id || null}
+          onCell={setModal}
+        />
       ) : (
         <div className="rounded-2xl border border-border bg-surface px-5 py-10 text-center text-muted">
           Loading the hop grid…
@@ -116,7 +135,7 @@ export default function Page() {
       {modal && (
         <CellModal project={modal} onClose={() => setModal(null)} onAction={doAction} />
       )}
-      {editorOpen && state && (
+      {editorOpen && state && !CLOUD && (
         <ProjectEditor
           projects={state.projects}
           onClose={() => setEditorOpen(false)}

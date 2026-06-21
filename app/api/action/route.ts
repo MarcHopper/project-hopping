@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { applyEvent } from "@/lib/db";
 
 // In-app actions from the grid: "I worked on it" (hop), "skip", or leave a brief.
 export const dynamic = "force-dynamic";
+
+const CLOUD = !!process.env.HOPPING_CLOUD;
 
 export async function POST(req: Request) {
   let body: { projectId?: string; action?: string; brief?: string };
@@ -20,6 +21,14 @@ export async function POST(req: Request) {
     );
   }
 
+  if (CLOUD) {
+    // Vercel: queue the action; the local hub drains + applies it.
+    const { cloudPushAction } = await import("@/lib/cloud");
+    await cloudPushAction({ projectId, action, brief });
+    return NextResponse.json({ ok: true, queued: true });
+  }
+
+  const { applyEvent } = await import("@/lib/db");
   switch (action) {
     case "worked":
     case "hop":

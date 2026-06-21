@@ -67,10 +67,36 @@ export function getDb(): DB {
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   db.exec(loadSchema());
+  migrate(db);
   db.prepare("INSERT OR IGNORE INTO settings (id) VALUES (1)").run();
 
   g.__hoppingDb = db;
   return db;
+}
+
+// Add columns introduced after a db was first created. Each ALTER is wrapped:
+// re-adding an existing column throws "duplicate column name", which we ignore.
+function migrate(db: DB): void {
+  const alters = [
+    "ALTER TABLE projects ADD COLUMN last_commit TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE projects ADD COLUMN uncommitted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE projects ADD COLUMN status_since INTEGER",
+    "ALTER TABLE projects ADD COLUMN time_cap_min INTEGER",
+    "ALTER TABLE settings ADD COLUMN focused_project_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE settings ADD COLUMN notify_interrupt INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE settings ADD COLUMN notify_nudge INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE settings ADD COLUMN notify_neglect INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE settings ADD COLUMN neglect_hour INTEGER NOT NULL DEFAULT 9",
+    "ALTER TABLE settings ADD COLUMN neglect_days INTEGER NOT NULL DEFAULT 3",
+    "ALTER TABLE settings ADD COLUMN last_neglect_fired TEXT NOT NULL DEFAULT ''",
+  ];
+  for (const sql of alters) {
+    try {
+      db.exec(sql);
+    } catch (e) {
+      if (!String((e as Error).message).includes("duplicate column")) throw e;
+    }
+  }
 }
 
 function now(): number {
@@ -89,6 +115,10 @@ interface RawProject {
   waiting_since: number | null;
   archived: number;
   sort_order: number;
+  last_commit: string;
+  uncommitted: number;
+  status_since: number | null;
+  time_cap_min: number | null;
 }
 
 function toRow(r: RawProject): ProjectRow {
@@ -102,6 +132,10 @@ function toRow(r: RawProject): ProjectRow {
     waiting_since: r.waiting_since,
     archived: !!r.archived,
     sort_order: r.sort_order,
+    last_commit: r.last_commit ?? "",
+    uncommitted: r.uncommitted ?? 0,
+    status_since: r.status_since ?? null,
+    time_cap_min: r.time_cap_min ?? null,
   };
 }
 
@@ -115,13 +149,32 @@ export function listProjectRows(): ProjectRow[] {
   ).map(toRow);
 }
 
+interface RawSettings {
+  tally_mode: string;
+  tally_reset_at: number;
+  focused_project_id: string;
+  notify_interrupt: number;
+  notify_nudge: number;
+  notify_neglect: number;
+  neglect_hour: number;
+  neglect_days: number;
+  last_neglect_fired: string;
+}
+
 export function getSettings(): Settings {
   const r = getDb()
-    .prepare("SELECT tally_mode, tally_reset_at FROM settings WHERE id = 1")
-    .get() as { tally_mode: string; tally_reset_at: number } | undefined;
+    .prepare("SELECT * FROM settings WHERE id = 1")
+    .get() as RawSettings | undefined;
   return {
     tally_mode: (r?.tally_mode ?? "rolling7d") as TallyMode,
     tally_reset_at: r?.tally_reset_at ?? 0,
+    focused_project_id: r?.focused_project_id ?? "",
+    notify_interrupt: r ? !!r.notify_interrupt : true,
+    notify_nudge: r ? !!r.notify_nudge : false,
+    notify_neglect: r ? !!r.notify_neglect : true,
+    neglect_hour: r?.neglect_hour ?? 9,
+    neglect_days: r?.neglect_days ?? 3,
+    last_neglect_fired: r?.last_neglect_fired ?? "",
   };
 }
 
@@ -222,6 +275,13 @@ export function applyEvent(input: ApplyInput): ApplyResult {
     "INSERT INTO events (project_id, type, payload, created_at) VALUES (?, ?, ?, ?)",
   ).run(projectId, input.type, JSON.stringify(payload), ts);
 
+  const prevStatus =
+    (
+      db.prepare("SELECT status FROM projects WHERE id = ?").get(projectId) as
+        | { status?: string }
+        | undefined
+    )?.status ?? "idle";
+
   let becameWaiting = false;
   const brief = typeof payload.brief === "string" ? payload.brief : undefined;
   const text = typeof payload.text === "string" ? payload.text : undefined;
@@ -229,33 +289,42 @@ export function applyEvent(input: ApplyInput): ApplyResult {
   switch (input.type) {
     case "hop": // a touch — closes the loop: back to idle, clears waiting
       db.prepare(
-        `UPDATE projects SET status = 'idle', last_touched_at = ?, waiting_since = NULL${
+        `UPDATE projects SET status = 'idle', status_since = ?, last_touched_at = ?, waiting_since = NULL${
           brief ? ", last_brief = ?" : ""
         } WHERE id = ?`,
-      ).run(...(brief ? [ts, brief, projectId] : [ts, projectId]));
+      ).run(...(brief ? [ts, ts, brief, projectId] : [ts, ts, projectId]));
       break;
     case "agent_waiting":
       db.prepare(
-        "UPDATE projects SET status = 'agent_waiting', waiting_since = ? WHERE id = ?",
-      ).run(ts, projectId);
-      becameWaiting = true;
+        "UPDATE projects SET status = 'agent_waiting', status_since = ?, waiting_since = ? WHERE id = ?",
+      ).run(ts, ts, projectId);
+      becameWaiting = prevStatus !== "agent_waiting"; // only notify on the transition
       break;
     case "agent_running":
       db.prepare(
-        "UPDATE projects SET status = 'agent_running', waiting_since = NULL WHERE id = ?",
-      ).run(projectId);
+        "UPDATE projects SET status = 'agent_running', status_since = ?, waiting_since = NULL WHERE id = ?",
+      ).run(ts, projectId);
       break;
     case "session_end":
       db.prepare(
-        "UPDATE projects SET status = 'idle', waiting_since = NULL WHERE id = ?",
-      ).run(projectId);
+        "UPDATE projects SET status = 'idle', status_since = ?, waiting_since = NULL WHERE id = ?",
+      ).run(ts, projectId);
       break;
     case "brief":
       if (text !== undefined) {
         db.prepare("UPDATE projects SET last_brief = ? WHERE id = ?").run(text, projectId);
       }
       break;
-    case "commit": // Phase 4 git watcher — log only for now
+    case "commit": {
+      // git watcher: record the latest commit subject + uncommitted count.
+      const subject = typeof payload.subject === "string" ? payload.subject : "";
+      const uncommitted =
+        typeof payload.uncommitted === "number" ? payload.uncommitted : 0;
+      db.prepare(
+        "UPDATE projects SET last_commit = ?, uncommitted = ? WHERE id = ?",
+      ).run(subject, uncommitted, projectId);
+      break;
+    }
     case "skip": // looked, nothing to do — no status change, no touch
     default:
       break;
@@ -349,4 +418,40 @@ export function setTallyMode(mode: TallyMode): void {
 
 export function resetTallies(): void {
   getDb().prepare("UPDATE settings SET tally_reset_at = ? WHERE id = 1").run(now());
+}
+
+// VS Code "you're here" — resolve a path to a project and mark it focused
+// ("" clears focus). Stored in settings, separate from agent status.
+export function setFocusedProjectByPath(target: string): string {
+  const id = target ? resolveProjectByPath(target) : "";
+  getDb().prepare("UPDATE settings SET focused_project_id = ? WHERE id = 1").run(id);
+  return id;
+}
+
+const NOTIFY_KEYS = [
+  "notify_interrupt",
+  "notify_nudge",
+  "notify_neglect",
+  "neglect_hour",
+  "neglect_days",
+] as const;
+
+export function updateNotifySettings(
+  patch: Partial<Record<(typeof NOTIFY_KEYS)[number], number | boolean>>,
+): void {
+  const db = getDb();
+  for (const k of NOTIFY_KEYS) {
+    const v = patch[k];
+    if (v === undefined) continue;
+    const num = typeof v === "boolean" ? (v ? 1 : 0) : v;
+    db.prepare(`UPDATE settings SET ${k} = ? WHERE id = 1`).run(num);
+  }
+}
+
+export function setLastNeglectFired(dateStr: string): void {
+  getDb().prepare("UPDATE settings SET last_neglect_fired = ? WHERE id = 1").run(dateStr);
+}
+
+export function setProjectTimeCap(id: string, minutes: number | null): void {
+  getDb().prepare("UPDATE projects SET time_cap_min = ? WHERE id = ?").run(minutes, id);
 }

@@ -19,11 +19,13 @@ export default function Grid({
   rows,
   columns,
   nextId,
+  focusedId,
   onCell,
 }: {
   rows: Project[];
   columns: Column[];
   nextId: string | null;
+  focusedId: string | null;
   onCell: (p: Project) => void;
 }) {
   return (
@@ -67,10 +69,29 @@ export default function Grid({
                   >
                     <StatusDot status={p.status} />
                     <span className="flex-1 min-w-0">
-                      <span className="block truncate font-medium">{p.name}</span>
+                      <span className="flex items-center gap-1.5 truncate font-medium">
+                        <span className="truncate">{p.name}</span>
+                        {p.id === focusedId && (
+                          <span className="shrink-0 rounded bg-running/20 px-1 text-[10px] font-medium text-running">
+                            ● here
+                          </span>
+                        )}
+                        {p.uncommitted > 0 && (
+                          <span
+                            title={`${p.uncommitted} uncommitted change(s)`}
+                            className="shrink-0 rounded bg-surface-2 px-1 text-[10px] tabular-nums text-muted"
+                          >
+                            ●{p.uncommitted}
+                          </span>
+                        )}
+                      </span>
                       <span className="block truncate text-xs text-muted">
                         {p.status === "idle" ? `tally ${p.tally}` : STATUS_META[p.status].label}
-                        {p.last_brief ? ` · ${p.last_brief}` : ""}
+                        {p.last_brief
+                          ? ` · ${p.last_brief}`
+                          : p.last_commit
+                            ? ` · ${p.last_commit}`
+                            : ""}
                       </span>
                     </span>
                     <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs tabular-nums text-muted">

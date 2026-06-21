@@ -26,6 +26,10 @@ export interface ProjectRow {
   waiting_since: number | null; // epoch ms when status entered agent_waiting
   archived: boolean;
   sort_order: number;
+  last_commit: string; // latest git commit subject (Phase 3 git watcher)
+  uncommitted: number; // count of uncommitted changes (Phase 3 git watcher)
+  status_since: number | null; // epoch ms the current status began (for cycle nudges)
+  time_cap_min: number | null; // per-project minutes-before-nudge cap (Phase 4)
 }
 
 // A project as handed to the UI / rankProjects — same as the row plus the
@@ -45,6 +49,13 @@ export interface AppEvent {
 export interface Settings {
   tally_mode: TallyMode;
   tally_reset_at: number; // epoch ms of the last manual "Reset tallies"
+  focused_project_id: string; // the project the VS Code extension says you're in ("" = none)
+  notify_interrupt: boolean; // Slack/desktop on agent waiting
+  notify_nudge: boolean; // per-project time-cap nudges (off by default)
+  notify_neglect: boolean; // daily neglect digest
+  neglect_hour: number; // local hour (0-23) the digest fires
+  neglect_days: number; // a project untouched >= this many days is "neglected"
+  last_neglect_fired: string; // YYYY-MM-DD guard so the digest fires once/day
 }
 
 export interface RankResult {

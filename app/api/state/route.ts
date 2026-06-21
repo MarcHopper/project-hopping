@@ -1,13 +1,45 @@
 import { NextResponse } from "next/server";
-import { getProjectsWithTally, getTouchEvents, getSettings } from "@/lib/db";
-import { rankProjects } from "@/lib/rankProjects";
-import { deriveColumns } from "@/lib/cycles";
-import { tallyWindowLabel } from "@/lib/tally";
 
 // The grid polls this every few seconds. Never cache it.
 export const dynamic = "force-dynamic";
 
+const CLOUD = !!process.env.HOPPING_CLOUD;
+
+// Shown before the hub has ever mirrored (or if the cloud read fails).
+const EMPTY = {
+  projects: [],
+  ordered: [],
+  next: null,
+  columns: [{ cells: {}, complete: false }],
+  settings: {
+    tally_mode: "rolling7d",
+    tally_reset_at: 0,
+    focused_project_id: "",
+    notify_interrupt: true,
+    notify_nudge: false,
+    notify_neglect: true,
+    neglect_hour: 9,
+    neglect_days: 3,
+    last_neglect_fired: "",
+    windowLabel: "last 7 days",
+  },
+  generatedAt: 0,
+};
+
 export async function GET() {
+  if (CLOUD) {
+    // Vercel: read the snapshot the local hub mirrored to Upstash.
+    const { cloudGetState } = await import("@/lib/cloud");
+    const state = await cloudGetState().catch(() => null);
+    return NextResponse.json(state ?? EMPTY);
+  }
+
+  // Local: read SQLite directly (better-sqlite3 only ever imported here).
+  const { getProjectsWithTally, getTouchEvents, getSettings } = await import("@/lib/db");
+  const { rankProjects } = await import("@/lib/rankProjects");
+  const { deriveColumns } = await import("@/lib/cycles");
+  const { tallyWindowLabel } = await import("@/lib/tally");
+
   const projects = getProjectsWithTally();
   const settings = getSettings();
   const activeIds = projects.filter((p) => !p.archived).map((p) => p.id);
