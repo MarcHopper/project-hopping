@@ -73,8 +73,17 @@ The tally counts hops inside a window you choose in the app (best practice:
 **rolling 7-day**, so neglect heals once you catch up). Options: 7-day · daily ·
 weekly · all-time, plus a manual **Reset tallies** button.
 
+## Phone access
+
+Live at **https://project-hopping.vercel.app** (password wall + magic-link). The
+Mac stays the source of truth: the hub mirrors a snapshot to Upstash and drains
+phone actions back through `applyEvent`, so you can hop from your phone and it
+lands on the Mac. Interrupt + neglect alerts arrive as Slack DMs.
+
 ## Status
 
-Phases 0–2 are built and verified: the grid, the hub, and the Claude Code alert.
-Phases 3–5 (VS Code + git watcher → notification classes → Supabase + phone push)
-are the roadmap. See `docs/` and the build plan.
+All phases built: the grid (0), local hub (1), Claude Code alert (2),
+git watcher + VS Code extension (3), Slack/desktop notification classes (4),
+and the Upstash-mirrored Vercel phone app with password + magic-link auth (5).
+The VS Code extension lives in `vscode-extension/`; notifications and cloud
+config are read from `~/.hopping.env`.
