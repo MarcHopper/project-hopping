@@ -52,6 +52,63 @@ function readTail(file, bytes = 256 * 1024) {
   }
 }
 
+function readHead(file, bytes = 16 * 1024) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(bytes);
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.toString("utf8", 0, n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The chat's display name: Claude Code's auto-generated `ai-title` (latest one),
+ * falling back to the first user prompt. This is what shows in the grid + alerts.
+ */
+export function readSessionName(sessionId) {
+  const file = findTranscript(sessionId);
+  if (!file) return "";
+  // Latest ai-title (scan the tail from the end).
+  try {
+    const lines = readTail(file).split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const o = JSON.parse(lines[i]);
+        if (o.type === "ai-title" && o.aiTitle) return String(o.aiTitle).slice(0, 80);
+      } catch {
+        /* skip */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  // Fallback: the first user message (head of the file).
+  try {
+    for (const l of readHead(file).split("\n").filter(Boolean)) {
+      try {
+        const o = JSON.parse(l);
+        if (o.type === "user") {
+          const c = o.message?.content;
+          const t =
+            typeof c === "string"
+              ? c
+              : Array.isArray(c)
+                ? c.find((b) => b?.type === "text")?.text || ""
+                : "";
+          if (t) return t.replace(/\s+/g, " ").slice(0, 60);
+        }
+      } catch {
+        /* skip */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
 function textFromAssistant(line) {
   const content = line?.message?.content;
   if (!Array.isArray(content)) return "";

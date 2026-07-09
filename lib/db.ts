@@ -701,6 +701,14 @@ export function setSessionThreadTs(sessionId: string, ts: string): void {
   getDb().prepare("UPDATE sessions SET slack_thread_ts = ? WHERE session_id = ?").run(ts, sessionId);
 }
 
+export function setSessionName(sessionId: string, name: string): void {
+  getDb().prepare("UPDATE sessions SET name = ? WHERE session_id = ?").run(name, sessionId);
+}
+
+export function endSession(sessionId: string): void {
+  getDb().prepare("UPDATE sessions SET status = 'ended' WHERE session_id = ?").run(sessionId);
+}
+
 export function setSessionResult(sessionId: string, result: string, status?: SessionStatus): void {
   if (status) {
     getDb()

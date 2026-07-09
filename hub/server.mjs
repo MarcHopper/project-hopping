@@ -16,7 +16,9 @@ import {
   listSessions,
   setFocusedProjectByPath,
   setSessionResult,
+  setSessionName,
   setSessionThreadTs,
+  endSession,
   inQuietHours,
   isProjectSilenced,
 } from "../lib/db.ts";
@@ -24,7 +26,7 @@ import { rankProjects } from "../lib/rankProjects.ts";
 import { startGitWatch } from "./gitwatch.mjs";
 import { notify, desktop, slackPost, slackReply } from "./notify.mjs";
 import { waitingCard } from "./cards.mjs";
-import { readLastResult } from "./transcript.mjs";
+import { readLastResult, readSessionName } from "./transcript.mjs";
 import { userIsActive } from "./presence.mjs";
 import { startMirror, ingestQueuedActions } from "./mirror.mjs";
 
@@ -40,17 +42,29 @@ function log(...a) {
 function ingest(input) {
   const result = applyEvent(input);
 
-  // Enrich a chat that just went waiting with its last result (for the grid + Slack).
+  // Enrich the chat from its transcript: its real name (Claude's ai-title) on
+  // every event, and its last result when it goes waiting.
   let snippet = "";
-  if (result.sessionBecameWaiting && result.sessionId) {
+  if (result.sessionId) {
     try {
-      const r = readLastResult(result.sessionId);
-      if (r.text) {
-        setSessionResult(result.sessionId, r.text);
-        snippet = r.summary;
+      const nm = readSessionName(result.sessionId);
+      if (nm) {
+        setSessionName(result.sessionId, nm);
+        result.sessionName = nm; // so the notification uses the real name too
       }
     } catch {
       /* transcript unreadable — fine */
+    }
+    if (result.sessionBecameWaiting) {
+      try {
+        const r = readLastResult(result.sessionId);
+        if (r.text) {
+          setSessionResult(result.sessionId, r.text);
+          snippet = r.summary;
+        }
+      } catch {
+        /* fine */
+      }
     }
   }
 
@@ -186,8 +200,32 @@ server.on("error", (err) => {
   log("server error", err?.message);
 });
 
+// Backfill chat names from transcripts + age out stale chats (a chat idle for
+// STALE_HOURS is treated as ended so the "open chats" list stays real).
+const STALE_MS = Number(process.env.HOPPING_STALE_HOURS ?? 6) * 3600 * 1000;
+function refreshSessions() {
+  try {
+    const now = Date.now();
+    for (const s of listSessions()) {
+      if (s.last_activity && now - s.last_activity > STALE_MS) {
+        endSession(s.session_id);
+        continue;
+      }
+      if (!s.name) {
+        const nm = readSessionName(s.session_id);
+        if (nm) setSessionName(s.session_id, nm);
+      }
+    }
+    mirrorNow();
+  } catch {
+    /* best-effort */
+  }
+}
+
 server.listen(PORT, HOST, () => {
   log(`hopping-hub listening on http://${HOST}:${PORT}`);
+  refreshSessions(); // backfill names + prune stale on boot
+  setInterval(refreshSessions, 60_000);
   startGitWatch(ingest); // watch repos for commits
   startMirror(); // start cloud mirror (no-op if not configured)
   // Drain phone actions from the cloud queue back into the local source of truth.
