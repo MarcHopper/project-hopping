@@ -67,6 +67,10 @@ function ingest(input) {
 // not the unmapped catch-all, not muted/snoozed, not quiet hours, and — unless
 // disabled — not while you're actively at the Mac. Each chat lives in a thread.
 async function fireInterrupt(result, snippet) {
+  // The 'unmapped' catch-all is noise (e.g. sessions launched from ~) — never
+  // notify at all, desktop or Slack.
+  if (result.projectId === "unmapped") return;
+
   const s = getSettings();
   const who =
     result.sessionName && result.sessionName !== result.name

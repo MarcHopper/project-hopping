@@ -495,7 +495,9 @@ function applySessionEvent(
 
   return {
     sessionId,
-    sessionName: row?.name || sessionId.slice(0, 8),
+    // Empty when the chat has no display name — so notifications don't append a
+    // raw id string like "· a1b2c3d4". (UI components do their own id fallback.)
+    sessionName: row?.name || "",
     sessionBecameWaiting: status === "waiting" && prev?.status !== "waiting",
   };
 }
