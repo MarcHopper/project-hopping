@@ -13,12 +13,16 @@ function channel() {
   return cfg().HOPPING_SLACK_CHANNEL;
 }
 
-export function desktop(message, title = "Hopping") {
-  const t = String(title).replace(/["\\]/g, " ");
-  const m = String(message).replace(/["\\]/g, " ");
+// desktop(body) or desktop(body, { title, subtitle }). Title is the bold first
+// line (use the chat name); subtitle carries the project; body is the ask.
+export function desktop(message, opts = {}) {
+  const clean = (s) => String(s ?? "").replace(/["\\]/g, " ");
+  const title = clean(opts.title || "Hopping");
+  const m = clean(message);
+  const sub = opts.subtitle ? ` subtitle "${clean(opts.subtitle)}"` : "";
   execFile(
     "osascript",
-    ["-e", `display notification "${m}" with title "${t}" sound name "Glass"`],
+    ["-e", `display notification "${m}" with title "${title}"${sub} sound name "Glass"`],
     () => {},
   );
 }

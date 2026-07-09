@@ -12,12 +12,18 @@ function btn(text, action_id, value, style) {
 
 // A chat that just finished and is waiting on you.
 export function waitingCard({ projectName, sessionName, projectId, sessionId, snippet }) {
-  const who = sessionName ? `${projectName} · ${sessionName}` : projectName;
+  const title = sessionName || projectName;
   const blocks = [
-    { type: "header", text: { type: "plain_text", text: `⚡ ${who} is waiting on you`, emoji: true } },
+    { type: "header", text: { type: "plain_text", text: `⚡ ${trunc(title, 120)}`, emoji: true } },
   ];
+  if (sessionName) {
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: projectName }],
+    });
+  }
   if (snippet) {
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: trunc(snippet, 600) } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: `*Needs:* ${trunc(snippet, 600)}` } });
   }
   blocks.push({
     type: "actions",

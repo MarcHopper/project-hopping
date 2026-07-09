@@ -45,6 +45,7 @@ function ingest(input) {
   // Enrich the chat from its transcript: its real name (Claude's ai-title) on
   // every event, and its last result when it goes waiting.
   let snippet = "";
+  let ask = "";
   if (result.sessionId) {
     try {
       const nm = readSessionName(result.sessionId);
@@ -61,6 +62,7 @@ function ingest(input) {
         if (r.text) {
           setSessionResult(result.sessionId, r.text);
           snippet = r.summary;
+          ask = r.ask; // "what needs to happen"
         }
       } catch {
         /* fine */
@@ -70,7 +72,7 @@ function ingest(input) {
 
   // Fire on a project OR a single-chat transition into waiting (per-chat alert).
   if ((result.becameWaiting || result.sessionBecameWaiting) && getSettings().notify_interrupt) {
-    fireInterrupt(result, snippet).catch(() => {}); // async, never blocks ingest
+    fireInterrupt(result, snippet, ask).catch(() => {}); // async, never blocks ingest
   }
 
   mirrorNow();
@@ -80,17 +82,17 @@ function ingest(input) {
 // Desktop always; Slack only when it earns it (the "balance"): class enabled,
 // not the unmapped catch-all, not muted/snoozed, not quiet hours, and — unless
 // disabled — not while you're actively at the Mac. Each chat lives in a thread.
-async function fireInterrupt(result, snippet) {
+async function fireInterrupt(result, snippet, ask) {
   // The 'unmapped' catch-all is noise (e.g. sessions launched from ~) — never
   // notify at all, desktop or Slack.
   if (result.projectId === "unmapped") return;
 
   const s = getSettings();
-  const who =
-    result.sessionName && result.sessionName !== result.name
-      ? `${result.name} · ${result.sessionName}`
-      : result.name;
-  desktop(`⚡ ${who} is waiting on you`);
+  // Chat name first (bold title), project as subtitle, the ask as the body.
+  const chatName = result.sessionName || result.name;
+  const subtitle = result.sessionName ? result.name : "";
+  const body = ask || "is waiting on you";
+  desktop(body, { title: chatName, subtitle });
 
   const allowSlack =
     s.slack_interrupt &&
@@ -105,7 +107,7 @@ async function fireInterrupt(result, snippet) {
     sessionName: result.sessionName,
     projectId: result.projectId,
     sessionId: result.sessionId,
-    snippet,
+    snippet: ask || snippet,
   });
   const sess = result.sessionId ? getSession(result.sessionId) : null;
   if (sess && sess.slack_thread_ts) {

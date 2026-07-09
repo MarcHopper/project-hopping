@@ -151,8 +151,18 @@ export function readLastResult(sessionId, cap = 4000) {
 
 function finalize(text, isError, cap) {
   const clipped = text.length > cap ? text.slice(0, cap) + "\n…(truncated)" : text;
-  const summary = text.replace(/\s+/g, " ").slice(0, 140);
-  return { text: clipped, summary, isError };
+  // "what needs to happen" — strip code blocks, then prefer the agent's last
+  // question; otherwise its last sentence.
+  const flat = text.replace(/```[\s\S]*?```/g, " ").replace(/\s+/g, " ").trim();
+  let ask;
+  const qs = flat.match(/[^.?!]*\?/g);
+  if (qs && qs.length) {
+    ask = qs[qs.length - 1].trim();
+  } else {
+    const parts = flat.split(/(?<=[.!])\s+/);
+    ask = (parts[parts.length - 1] || flat).trim();
+  }
+  return { text: clipped, summary: flat.slice(0, 140), ask: ask.slice(0, 150), isError };
 }
 
 /** The cwd recorded in the transcript (first line) — used to confirm/repair. */
