@@ -111,9 +111,9 @@ async function fireInterrupt(result, snippet, ask) {
   });
   const sess = result.sessionId ? getSession(result.sessionId) : null;
   if (sess && sess.slack_thread_ts) {
-    await slackReply(sess.slack_thread_ts, { text: `⚡ ${who} is waiting again`, blocks });
+    await slackReply(sess.slack_thread_ts, { text: `⚡ ${chatName} is waiting again`, blocks });
   } else {
-    const ts = await slackPost({ text: `⚡ ${who} is waiting on you`, blocks });
+    const ts = await slackPost({ text: `⚡ ${chatName} is waiting on you`, blocks });
     if (ts && result.sessionId) setSessionThreadTs(result.sessionId, ts);
   }
 }
