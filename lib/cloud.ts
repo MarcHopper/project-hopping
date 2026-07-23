@@ -57,11 +57,25 @@ export interface QueuedAction {
   brief?: string;
   settings?: Record<string, unknown>;
   // Slack interactive shape (Phase 7/8): discriminated by `kind`
-  kind?: "hopped" | "snooze" | "mute" | "unmute" | "continue" | "status";
+  // + dashboard note actions (Phase 1)
+  kind?:
+    | "hopped"
+    | "snooze"
+    | "mute"
+    | "unmute"
+    | "continue"
+    | "status"
+    | "note_add"
+    | "note_toggle"
+    | "note_delete";
   sessionId?: string;
   minutes?: number;
   prompt?: string;
   thread_ts?: string;
+  // note actions
+  noteId?: number;
+  text?: string;
+  done?: boolean;
 }
 
 export async function cloudPushAction(action: QueuedAction): Promise<void> {

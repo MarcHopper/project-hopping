@@ -14,11 +14,13 @@ import type {
   ProjectRow,
   ProjectStatus,
   Session,
+  SessionNote,
   SessionStatus,
   Settings,
   TallyMode,
 } from "./types";
 import { windowStart } from "./tally";
+import { sanitizeTodos } from "./todos";
 
 const DB_PATH =
   process.env.HOPPING_DB ?? path.join(process.cwd(), "data", "hopping.db");
@@ -44,12 +46,20 @@ CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
   cwd TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'running', name TEXT NOT NULL DEFAULT '',
   last_activity INTEGER, last_result TEXT NOT NULL DEFAULT '', slack_thread_ts TEXT NOT NULL DEFAULT '',
-  started_at INTEGER NOT NULL DEFAULT 0
+  started_at INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '', ask TEXT NOT NULL DEFAULT '',
+  todos_json TEXT NOT NULL DEFAULT '[]', todos_updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS session_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);
+CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
 `;
 
 type DB = Database.Database;
@@ -109,6 +119,11 @@ function migrate(db: DB): void {
     "ALTER TABLE settings ADD COLUMN active_suppress INTEGER NOT NULL DEFAULT 1", // desktop-only while active
     "ALTER TABLE projects ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE projects ADD COLUMN snooze_until INTEGER",
+    // Command Center Phase 1: per-chat summary + task list
+    "ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN ask TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN todos_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE sessions ADD COLUMN todos_updated_at INTEGER",
   ];
   for (const sql of alters) {
     try {
@@ -461,7 +476,7 @@ function applySessionEvent(
         ? "running"
         : type === "session_end"
           ? "ended"
-          : null; // hop/skip/commit/brief don't change session status
+          : null; // hop/skip/commit/brief/todo_update don't change session status
 
   const prev = db
     .prepare("SELECT status FROM sessions WHERE session_id = ?")
@@ -488,6 +503,20 @@ function applySessionEvent(
     name,
     ts,
   });
+
+  // A todo_update carries the chat's TodoWrite list. Store it guarded by the
+  // event timestamp so a slow 60s transcript backfill can never regress a
+  // fresher push from the PostToolUse hook.
+  if (type === "todo_update" && Array.isArray(payload.todos)) {
+    db.prepare(
+      `UPDATE sessions SET todos_json = @todos, todos_updated_at = @ts
+       WHERE session_id = @sid AND (todos_updated_at IS NULL OR @ts > todos_updated_at)`,
+    ).run({
+      sid: sessionId,
+      todos: JSON.stringify(sanitizeTodos(payload.todos)),
+      ts,
+    });
+  }
 
   const row = db
     .prepare("SELECT name FROM sessions WHERE session_id = ?")
@@ -653,6 +682,10 @@ interface RawSession {
   last_result: string;
   slack_thread_ts: string;
   started_at: number;
+  summary: string;
+  ask: string;
+  todos_json: string;
+  todos_updated_at: number | null;
 }
 
 function toSession(r: RawSession, projectName?: string): Session {
@@ -667,6 +700,10 @@ function toSession(r: RawSession, projectName?: string): Session {
     last_result: r.last_result,
     slack_thread_ts: r.slack_thread_ts,
     started_at: r.started_at,
+    summary: r.summary ?? "",
+    ask: r.ask ?? "",
+    todos_json: r.todos_json ?? "[]",
+    todos_updated_at: r.todos_updated_at ?? null,
   };
 }
 
@@ -719,4 +756,80 @@ export function setSessionResult(sessionId: string, result: string, status?: Ses
       .prepare("UPDATE sessions SET last_result = ?, last_activity = ? WHERE session_id = ?")
       .run(result, now(), sessionId);
   }
+}
+
+/** Persist the transcript-derived one-line summary + "what it's waiting on". */
+export function setSessionSummary(sessionId: string, summary: string, ask: string): void {
+  getDb()
+    .prepare("UPDATE sessions SET summary = ?, ask = ? WHERE session_id = ?")
+    .run(summary ?? "", ask ?? "", sessionId);
+}
+
+/** Store a chat's TodoWrite list (JSON) with a monotonic timestamp guard. */
+export function setSessionTodos(sessionId: string, todosJson: string, at: number): void {
+  getDb()
+    .prepare(
+      `UPDATE sessions SET todos_json = ?, todos_updated_at = ?
+       WHERE session_id = ? AND (todos_updated_at IS NULL OR ? > todos_updated_at)`,
+    )
+    .run(todosJson, at, sessionId, at);
+}
+
+// ---- session notes (the dashboard "My notes" checklist) ------------------
+
+interface RawNote {
+  id: number;
+  session_id: string;
+  text: string;
+  done: number;
+  created_at: number;
+  updated_at: number;
+}
+
+function toNote(r: RawNote): SessionNote {
+  return {
+    id: r.id,
+    session_id: r.session_id,
+    text: r.text,
+    done: !!r.done,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function addSessionNote(sessionId: string, text: string): SessionNote {
+  const ts = now();
+  const info = getDb()
+    .prepare(
+      "INSERT INTO session_notes (session_id, text, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)",
+    )
+    .run(sessionId, text.slice(0, 500), ts, ts);
+  return {
+    id: Number(info.lastInsertRowid),
+    session_id: sessionId,
+    text: text.slice(0, 500),
+    done: false,
+    created_at: ts,
+    updated_at: ts,
+  };
+}
+
+export function setSessionNoteDone(noteId: number, done: boolean): void {
+  getDb()
+    .prepare("UPDATE session_notes SET done = ?, updated_at = ? WHERE id = ?")
+    .run(done ? 1 : 0, now(), noteId);
+}
+
+export function deleteSessionNote(noteId: number): void {
+  getDb().prepare("DELETE FROM session_notes WHERE id = ?").run(noteId);
+}
+
+/** All notes for a session (or every note when no id is given), oldest first. */
+export function listSessionNotes(sessionId?: string): SessionNote[] {
+  const rows = sessionId
+    ? (getDb()
+        .prepare("SELECT * FROM session_notes WHERE session_id = ? ORDER BY id")
+        .all(sessionId) as RawNote[])
+    : (getDb().prepare("SELECT * FROM session_notes ORDER BY id").all() as RawNote[]);
+  return rows.map(toNote);
 }

@@ -55,7 +55,23 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity   INTEGER,
   last_result     TEXT NOT NULL DEFAULT '',
   slack_thread_ts TEXT NOT NULL DEFAULT '',
-  started_at      INTEGER NOT NULL DEFAULT 0
+  started_at      INTEGER NOT NULL DEFAULT 0,
+  summary          TEXT NOT NULL DEFAULT '',   -- one-line "what happened" (transcript-derived)
+  ask              TEXT NOT NULL DEFAULT '',   -- "what it's waiting on"
+  todos_json       TEXT NOT NULL DEFAULT '[]', -- the chat's own TodoWrite list, JSON
+  todos_updated_at INTEGER                     -- epoch ms of the todos snapshot
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);
+
+-- Human-added checklist items per chat (the dashboard "My notes"), distinct from
+-- the chat's auto-synced TodoWrite items.
+CREATE TABLE IF NOT EXISTS session_notes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT NOT NULL,
+  text        TEXT NOT NULL,
+  done        INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);

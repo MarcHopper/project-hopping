@@ -1,5 +1,8 @@
 // Shared types for Hopping. Imported by the Next.js app AND the standalone hub,
-// so this file must stay dependency-free.
+// so this file must stay dependency-free (todos.ts is also dependency-free).
+
+import type { TodoItem } from "./todos";
+export type { TodoItem } from "./todos";
 
 export type ProjectStatus = "idle" | "agent_running" | "agent_waiting" | "blocked";
 
@@ -10,7 +13,8 @@ export type EventType =
   | "agent_running" // an agent is actively working
   | "session_end" // a Claude Code / agent session ended
   | "commit" // a git commit landed (Phase 4 git watcher)
-  | "brief"; // the human left a "where I left off" note
+  | "brief" // the human left a "where I left off" note
+  | "todo_update"; // a chat's TodoWrite list changed (per-chat task sync)
 
 export type TallyMode = "rolling7d" | "daily" | "weekly" | "none";
 
@@ -87,4 +91,29 @@ export interface Session {
   last_result: string; // last assistant message text (from the transcript)
   slack_thread_ts: string; // the Slack thread this chat lives in ("" = none yet)
   started_at: number;
+  summary: string; // one-line "what happened" (from the transcript, persisted)
+  ask: string; // "what it's waiting on" — the last question/sentence
+  todos_json: string; // JSON-serialized TodoItem[] (the chat's own task list)
+  todos_updated_at: number | null; // epoch ms of the todos snapshot (monotonic guard)
+}
+
+// A note the human adds to a chat from the dashboard — the "My notes" checklist,
+// separate from the chat's auto-synced TodoWrite items.
+export interface SessionNote {
+  id: number;
+  session_id: string;
+  text: string;
+  done: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+// A session as handed to the dashboard: the row plus decoration the hub computes
+// at read time (never stored) — live-window state, parsed todos, and notes.
+export interface SessionView extends Session {
+  window_open: boolean; // a VS Code / Claude Code process for this session is alive
+  pid?: number;
+  entrypoint?: string; // e.g. "claude-vscode"
+  todos: TodoItem[]; // parsed from todos_json
+  notes: SessionNote[];
 }

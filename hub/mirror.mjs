@@ -10,39 +10,20 @@ import {
 } from "../lib/cloud.ts";
 import {
   getProjectsWithTally,
-  getSettings,
-  getTouchEvents,
-  listSessions,
   setTallyMode,
   resetTallies,
   updateNotifySettings,
   setProjectMuted,
   setProjectSnooze,
+  addSessionNote,
+  setSessionNoteDone,
+  deleteSessionNote,
 } from "../lib/db.ts";
 import { rankProjects } from "../lib/rankProjects.ts";
-import { deriveColumns } from "../lib/cycles.ts";
-import { tallyWindowLabel } from "../lib/tally.ts";
 import { slackPost } from "./notify.mjs";
 import { standupCard } from "./cards.mjs";
 import { runContinue } from "./runner.mjs";
-
-// Exactly the shape the local /api/state returns, so the phone reuses the UI.
-function snapshot() {
-  const projects = getProjectsWithTally();
-  const settings = getSettings();
-  const activeIds = projects.filter((p) => !p.archived).map((p) => p.id);
-  const columns = deriveColumns(getTouchEvents(), activeIds);
-  const { next, ordered } = rankProjects(projects);
-  return {
-    projects,
-    ordered,
-    next,
-    columns,
-    sessions: listSessions(),
-    settings: { ...settings, windowLabel: tallyWindowLabel(settings.tally_mode) },
-    generatedAt: Date.now(),
-  };
-}
+import { buildSnapshot } from "./stateView.mjs";
 
 export function startMirror() {
   if (!cloudConfigured()) {
@@ -50,7 +31,7 @@ export function startMirror() {
     return;
   }
   startMirror.push = () => {
-    cloudSetState(snapshot()).catch(() => {});
+    cloudSetState(buildSnapshot()).catch(() => {});
   };
   startMirror.push(); // initial push on boot
 }
@@ -132,6 +113,16 @@ async function handleKind(a, ingest) {
     }
     case "continue":
       await runContinue(a);
+      break;
+    // Dashboard "My notes" — the human's per-chat checklist (Phase 1).
+    case "note_add":
+      if (a.sessionId && a.text) addSessionNote(a.sessionId, a.text);
+      break;
+    case "note_toggle":
+      if (typeof a.noteId === "number") setSessionNoteDone(a.noteId, !!a.done);
+      break;
+    case "note_delete":
+      if (typeof a.noteId === "number") deleteSessionNote(a.noteId);
       break;
     default:
       break;

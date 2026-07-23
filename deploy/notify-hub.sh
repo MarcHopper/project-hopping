@@ -5,7 +5,9 @@
 # payload can never break a Claude Code session.
 #
 # Installed at ~/.claude/hooks/notify-hub.sh and wired in ~/.claude/settings.json.
-# Usage: notify-hub.sh <running|waiting|session_end>
+# Usage: notify-hub.sh <running|waiting|session_end|todo>
+#   running|waiting|session_end  — SessionStart/UserPromptSubmit/Stop/SessionEnd
+#   todo                          — PostToolUse(TodoWrite): syncs the chat's task list
 
 TYPE="${1:-waiting}"
 input="$(cat)"
@@ -18,16 +20,28 @@ cwd="$(printf '%s' "$input" | /usr/bin/jq -r '.cwd // empty' 2>/dev/null)"
 
 session="$(printf '%s' "$input" | /usr/bin/jq -r '.session_id // empty' 2>/dev/null)"
 
-case "$TYPE" in
-  running)     etype="agent_running" ;;
-  waiting)     etype="agent_waiting" ;;
-  session_end) etype="session_end"   ;;
-  *)           etype="agent_waiting" ;;
-esac
-
-payload="$(/usr/bin/jq -nc --arg p "$cwd" --arg t "$etype" --arg s "$session" \
-  '{path:$p, type:$t, payload:{session_id:$s, source:"claude-code"}}' 2>/dev/null)"
-[ -z "$payload" ] && payload="{\"path\":\"$cwd\",\"type\":\"$etype\",\"payload\":{}}"
+if [ "$TYPE" = "todo" ]; then
+  # The todos array must ride through as JSON (not an --arg string), so build the
+  # whole payload from the hook's stdin object in one jq transform. transcript_path
+  # lets the hub drop TodoWrite calls made inside a subagent (its path has /subagents/).
+  payload="$(printf '%s' "$input" | /usr/bin/jq -c \
+    '{path:(.cwd // ""), type:"todo_update",
+      payload:{session_id:(.session_id // ""),
+               todos:(.tool_input.todos // []),
+               transcript_path:(.transcript_path // ""),
+               source:"claude-code"}}' 2>/dev/null)"
+  [ -z "$payload" ] && exit 0
+else
+  case "$TYPE" in
+    running)     etype="agent_running" ;;
+    waiting)     etype="agent_waiting" ;;
+    session_end) etype="session_end"   ;;
+    *)           etype="agent_waiting" ;;
+  esac
+  payload="$(/usr/bin/jq -nc --arg p "$cwd" --arg t "$etype" --arg s "$session" \
+    '{path:$p, type:$t, payload:{session_id:$s, source:"claude-code"}}' 2>/dev/null)"
+  [ -z "$payload" ] && payload="{\"path\":\"$cwd\",\"type\":\"$etype\",\"payload\":{}}"
+fi
 
 # Fire-and-forget. 1s connect timeout so a stopped hub never delays Claude.
 /usr/bin/curl -s -m 2 --connect-timeout 1 \

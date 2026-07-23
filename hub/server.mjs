@@ -10,25 +10,30 @@ import { loadEnv } from "./config.mjs";
 loadEnv(); // ensure ~/.hopping.env (Slack + Upstash) is in process.env before anything reads it
 import {
   applyEvent,
-  getProjectsWithTally,
   getSettings,
   getSession,
   listSessions,
+  listSessionNotes,
   setFocusedProjectByPath,
   setSessionResult,
+  setSessionSummary,
+  setSessionTodos,
   setSessionName,
   setSessionThreadTs,
+  addSessionNote,
+  setSessionNoteDone,
+  deleteSessionNote,
   endSession,
   inQuietHours,
   isProjectSilenced,
 } from "../lib/db.ts";
-import { rankProjects } from "../lib/rankProjects.ts";
 import { startGitWatch } from "./gitwatch.mjs";
 import { notify, desktop, slackPost, slackReply } from "./notify.mjs";
 import { waitingCard } from "./cards.mjs";
-import { readLastResult, readSessionName } from "./transcript.mjs";
+import { readLastResult, readSessionName, readLatestTodos } from "./transcript.mjs";
 import { userIsActive } from "./presence.mjs";
 import { startMirror, ingestQueuedActions } from "./mirror.mjs";
+import { buildSnapshot, viewSession } from "./stateView.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.HOPPING_HUB_PORT ?? 4319);
@@ -40,13 +45,26 @@ function log(...a) {
 // The one place events become state: apply → notify (interrupt) → mirror to cloud.
 // Both the HTTP handler and the git watcher call this.
 function ingest(input) {
+  // A TodoWrite fired inside a subagent carries the PARENT session_id; dropping
+  // these keeps subagent checklists out of the chat's own task list. (The
+  // transcript backfill re-derives from the main thread, excluding sidechains.)
+  if (
+    input.type === "todo_update" &&
+    typeof input.payload?.transcript_path === "string" &&
+    input.payload.transcript_path.includes("/subagents/")
+  ) {
+    return applyEvent({ ...input, type: "skip" }); // ignore, but stay a no-op
+  }
+
   const result = applyEvent(input);
 
   // Enrich the chat from its transcript: its real name (Claude's ai-title) on
-  // every event, and its last result when it goes waiting.
+  // every event, and its last result when it goes waiting. Skip the name read on
+  // todo_update — todos already flowed through applyEvent and the 60s loop keeps
+  // names fresh, so there's no need to tail the transcript on every checklist tick.
   let snippet = "";
   let ask = "";
-  if (result.sessionId) {
+  if (result.sessionId && input.type !== "todo_update") {
     try {
       const nm = readSessionName(result.sessionId);
       if (nm) {
@@ -61,6 +79,7 @@ function ingest(input) {
         const r = readLastResult(result.sessionId);
         if (r.text) {
           setSessionResult(result.sessionId, r.text);
+          setSessionSummary(result.sessionId, r.summary, r.ask); // persist for the dashboard
           snippet = r.summary;
           ask = r.ask; // "what needs to happen"
         }
@@ -153,13 +172,31 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/state") {
-      const projects = getProjectsWithTally();
-      return send(res, 200, {
-        projects,
-        ...rankProjects(projects),
-        sessions: listSessions(),
-        settings: getSettings(),
-      });
+      return send(res, 200, buildSnapshot());
+    }
+
+    // GET /session/<id> — one decorated session (fresh todo read if empty).
+    const mSession = url.pathname.match(/^\/session\/([^/]+)$/);
+    if (req.method === "GET" && mSession) {
+      const id = decodeURIComponent(mSession[1]);
+      const view = viewSession(id);
+      if (!view) return send(res, 404, { ok: false, error: "no such session" });
+      return send(res, 200, { ok: true, session: view });
+    }
+
+    // POST /session/<id>/notes {op:"add"|"toggle"|"delete", text?, noteId?, done?}
+    const mNotes = url.pathname.match(/^\/session\/([^/]+)\/notes$/);
+    if (req.method === "POST" && mNotes) {
+      const id = decodeURIComponent(mNotes[1]);
+      const body = JSON.parse((await readBody(req)) || "{}");
+      if (body.op === "add" && body.text) addSessionNote(id, String(body.text));
+      else if (body.op === "toggle" && typeof body.noteId === "number")
+        setSessionNoteDone(body.noteId, !!body.done);
+      else if (body.op === "delete" && typeof body.noteId === "number")
+        deleteSessionNote(body.noteId);
+      else return send(res, 400, { ok: false, error: "bad note op" });
+      mirrorNow();
+      return send(res, 200, { ok: true, notes: listSessionNotes(id) });
     }
 
     if (req.method === "POST" && url.pathname === "/event") {
@@ -205,9 +242,12 @@ server.on("error", (err) => {
 // Backfill chat names from transcripts + age out stale chats (a chat idle for
 // STALE_HOURS is treated as ended so the "open chats" list stays real).
 const STALE_MS = Number(process.env.HOPPING_STALE_HOURS ?? 6) * 3600 * 1000;
+const DAY_MS = 24 * 3600 * 1000;
+const TODO_BACKFILL_PER_TICK = 10;
 function refreshSessions() {
   try {
     const now = Date.now();
+    let todoReads = 0;
     for (const s of listSessions()) {
       if (s.last_activity && now - s.last_activity > STALE_MS) {
         endSession(s.session_id);
@@ -216,6 +256,19 @@ function refreshSessions() {
       if (!s.name) {
         const nm = readSessionName(s.session_id);
         if (nm) setSessionName(s.session_id, nm);
+      }
+      // Backfill todos for chats that predate the PostToolUse hook (the push
+      // path). Budgeted so a busy day never floods transcript reads: only recent
+      // chats with no stored list, capped per tick.
+      if (
+        todoReads < TODO_BACKFILL_PER_TICK &&
+        (!s.todos_json || s.todos_json === "[]") &&
+        s.last_activity &&
+        now - s.last_activity < DAY_MS
+      ) {
+        todoReads++;
+        const r = readLatestTodos(s.session_id);
+        if (r) setSessionTodos(s.session_id, JSON.stringify(r.todos), r.at);
       }
     }
     mirrorNow();

@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractLatestTodos } from "../lib/todos.ts";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 
@@ -163,6 +164,33 @@ function finalize(text, isError, cap) {
     ask = (parts[parts.length - 1] || flat).trim();
   }
   return { text: clipped, summary: flat.slice(0, 140), ask: ask.slice(0, 150), isError };
+}
+
+/**
+ * The chat's current TodoWrite list, read from the transcript tail. The push
+ * path (PostToolUse hook) is the primary feed; this is the 60s backfill for
+ * sessions that predate the hook. Returns { todos, at } or null.
+ *
+ * Tail budget: 1MB first (covers many turns), then one 4MB retry in case a giant
+ * embedded-base64 line ate the window. Never full-parses (transcripts hit 125MB).
+ */
+export function readLatestTodos(sessionId) {
+  const file = findTranscript(sessionId);
+  if (!file) return null;
+  for (const bytes of [1024 * 1024, 4 * 1024 * 1024]) {
+    let lines;
+    try {
+      lines = readTail(file, bytes).split("\n").filter(Boolean);
+    } catch {
+      return null;
+    }
+    // Drop the first line on a big read — a tail chunk likely split it mid-JSON.
+    const r = extractLatestTodos(lines);
+    if (r) return r;
+    const st = fs.statSync(file);
+    if (st.size <= bytes) break; // already read the whole file; no point retrying
+  }
+  return null;
 }
 
 /** The cwd recorded in the transcript (first line) — used to confirm/repair. */
