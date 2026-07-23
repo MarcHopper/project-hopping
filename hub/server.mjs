@@ -35,6 +35,7 @@ import { userIsActive } from "./presence.mjs";
 import { startMirror, startTailsMirror, ingestQueuedActions } from "./mirror.mjs";
 import { buildSnapshot, viewSession } from "./stateView.mjs";
 import { runContinue } from "./runner.mjs";
+import { collectAgents, agentAction, agentLogTail, agentRuns } from "./agents.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.HOPPING_HUB_PORT ?? 4319);
@@ -230,6 +231,38 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, started: true });
     }
 
+    // GET /agents — the agent-health snapshot (never trusts status files alone).
+    if (req.method === "GET" && url.pathname === "/agents") {
+      const agents = await collectAgents();
+      return send(res, 200, { ok: true, agents, generatedAt: Date.now() });
+    }
+
+    // GET /agents/<id>/log?lines=200 — allowlisted log tail.
+    const mLog = url.pathname.match(/^\/agents\/([^/]+)\/log$/);
+    if (req.method === "GET" && mLog) {
+      const id = decodeURIComponent(mLog[1]);
+      const lines = Math.min(500, Math.max(1, Number(url.searchParams.get("lines")) || 200));
+      return send(res, 200, agentLogTail(id, lines));
+    }
+
+    // GET /agents/<id>/runs — recent observed run history.
+    const mRuns = url.pathname.match(/^\/agents\/([^/]+)\/runs$/);
+    if (req.method === "GET" && mRuns) {
+      const id = decodeURIComponent(mRuns[1]);
+      return send(res, 200, { ok: true, runs: agentRuns(id) });
+    }
+
+    // POST /agents/<id>/action {op:"run"|"pause"|"resume"|"ack"|"unack"}
+    const mAct = url.pathname.match(/^\/agents\/([^/]+)\/action$/);
+    if (req.method === "POST" && mAct) {
+      const id = decodeURIComponent(mAct[1]);
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const r = await agentAction(id, body.op);
+      await collectAgents(true); // refresh so the response-follow-up poll reflects it
+      mirrorNow();
+      return send(res, 200, r);
+    }
+
     if (req.method === "POST" && url.pathname === "/event") {
       const body = JSON.parse((await readBody(req)) || "{}");
       if (!body.type) return send(res, 400, { ok: false, error: "type required" });
@@ -315,6 +348,11 @@ server.listen(PORT, HOST, () => {
   startGitWatch(ingest); // watch repos for commits
   startMirror(); // start cloud mirror (no-op if not configured)
   startTailsMirror(); // message tails for the phone (30s, hash-skipped)
+  // Agent-health monitor: collect on boot, then every 60s (feeds /state + /agents).
+  collectAgents(true)
+    .then(() => mirrorNow())
+    .catch(() => {});
+  setInterval(() => collectAgents(true).catch(() => {}), 60_000);
   // Drain phone actions from the cloud queue back into the local source of truth.
   setInterval(() => ingestQueuedActions(ingest).catch(() => {}), 2000);
   // Background notification timers (nudge + daily neglect digest).

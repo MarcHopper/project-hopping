@@ -27,6 +27,7 @@ import { slackPost } from "./notify.mjs";
 import { standupCard } from "./cards.mjs";
 import { runContinue } from "./runner.mjs";
 import { buildSnapshot } from "./stateView.mjs";
+import { agentAction } from "./agents.mjs";
 
 export function startMirror() {
   if (!cloudConfigured()) {
@@ -180,6 +181,19 @@ async function handleKind(a, ingest) {
       break;
     case "note_delete":
       if (typeof a.noteId === "number") deleteSessionNote(a.noteId);
+      break;
+    // Agent actions from the phone (Phase 3).
+    case "agent_run":
+      if (a.agentId) await agentAction(a.agentId, "run");
+      break;
+    case "agent_pause":
+      if (a.agentId) await agentAction(a.agentId, "pause");
+      break;
+    case "agent_resume":
+      if (a.agentId) await agentAction(a.agentId, "resume");
+      break;
+    case "agent_ack":
+      if (a.agentId) await agentAction(a.agentId, a.done === false ? "unack" : "ack");
       break;
     default:
       break;

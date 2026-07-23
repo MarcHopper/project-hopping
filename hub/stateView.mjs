@@ -17,6 +17,7 @@ import { deriveColumns } from "../lib/cycles.ts";
 import { tallyWindowLabel } from "../lib/tally.ts";
 import { liveSessions } from "./registry.mjs";
 import { readLatestTodos } from "./transcript.mjs";
+import { agentsSnapshot } from "./agents.mjs";
 
 function safeParse(json, fallback) {
   try {
@@ -98,6 +99,7 @@ export function buildSnapshot() {
     next,
     columns,
     sessions: decorateSessions(),
+    agents: agentsSnapshot(), // last collected agent-health snapshot (60s)
     settings: { ...settings, windowLabel: tallyWindowLabel(settings.tally_mode) },
     generatedAt: Date.now(),
   };

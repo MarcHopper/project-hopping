@@ -84,7 +84,11 @@ export interface QueuedAction {
     | "status"
     | "note_add"
     | "note_toggle"
-    | "note_delete";
+    | "note_delete"
+    | "agent_run"
+    | "agent_pause"
+    | "agent_resume"
+    | "agent_ack";
   sessionId?: string;
   minutes?: number;
   prompt?: string;
@@ -93,6 +97,8 @@ export interface QueuedAction {
   noteId?: number;
   text?: string;
   done?: boolean;
+  // agent actions
+  agentId?: string;
 }
 
 export async function cloudPushAction(action: QueuedAction): Promise<void> {

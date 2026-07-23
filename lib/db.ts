@@ -57,11 +57,23 @@ CREATE TABLE IF NOT EXISTS session_notes (
   text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_acks (
+  agent_id TEXT PRIMARY KEY, acked_at INTEGER NOT NULL, fingerprint TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS agent_overrides (
+  agent_id TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0, paused_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT '',
+  exit_code INTEGER, summary TEXT NOT NULL DEFAULT ''
+);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);
 CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs ON agent_runs(agent_id, observed_at);
 `;
 
 type DB = Database.Database;
@@ -900,4 +912,76 @@ export function listSessionNotes(sessionId?: string): SessionNote[] {
         .all(sessionId) as RawNote[])
     : (getDb().prepare("SELECT * FROM session_notes ORDER BY id").all() as RawNote[]);
   return rows.map(toNote);
+}
+
+// ---- agent monitor state (Phase 3) ---------------------------------------
+
+export function listAgentAcks(): Record<string, { fingerprint: string; acked_at: number }> {
+  const rows = getDb()
+    .prepare("SELECT agent_id, acked_at, fingerprint FROM agent_acks")
+    .all() as { agent_id: string; acked_at: number; fingerprint: string }[];
+  const out: Record<string, { fingerprint: string; acked_at: number }> = {};
+  for (const r of rows) out[r.agent_id] = { fingerprint: r.fingerprint, acked_at: r.acked_at };
+  return out;
+}
+
+export function setAgentAck(agentId: string, fingerprint: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO agent_acks (agent_id, acked_at, fingerprint) VALUES (?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET acked_at = excluded.acked_at, fingerprint = excluded.fingerprint`,
+    )
+    .run(agentId, now(), fingerprint);
+}
+
+export function clearAgentAck(agentId: string): void {
+  getDb().prepare("DELETE FROM agent_acks WHERE agent_id = ?").run(agentId);
+}
+
+export function listAgentOverrides(): Record<string, { paused: boolean }> {
+  const rows = getDb()
+    .prepare("SELECT agent_id, paused FROM agent_overrides")
+    .all() as { agent_id: string; paused: number }[];
+  const out: Record<string, { paused: boolean }> = {};
+  for (const r of rows) out[r.agent_id] = { paused: !!r.paused };
+  return out;
+}
+
+export function setAgentPaused(agentId: string, paused: boolean): void {
+  getDb()
+    .prepare(
+      `INSERT INTO agent_overrides (agent_id, paused, paused_at) VALUES (?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET paused = excluded.paused, paused_at = excluded.paused_at`,
+    )
+    .run(agentId, paused ? 1 : 0, paused ? now() : null);
+}
+
+export interface AgentRunRow {
+  observed_at: number;
+  status: string;
+  exit_code: number | null;
+  summary: string;
+}
+
+/** Record an observed agent run transition (deduped by the collector). Pruned to 50/agent. */
+export function applyAgentObservation(
+  agentId: string,
+  o: { status?: string; exit_code?: number | null; summary?: string },
+): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT INTO agent_runs (agent_id, observed_at, status, exit_code, summary) VALUES (?, ?, ?, ?, ?)",
+  ).run(agentId, now(), o.status ?? "", o.exit_code ?? null, (o.summary ?? "").slice(0, 300));
+  db.prepare(
+    `DELETE FROM agent_runs WHERE agent_id = ? AND id NOT IN (
+       SELECT id FROM agent_runs WHERE agent_id = ? ORDER BY observed_at DESC LIMIT 50)`,
+  ).run(agentId, agentId);
+}
+
+export function listAgentRuns(agentId: string, limit = 20): AgentRunRow[] {
+  return getDb()
+    .prepare(
+      "SELECT observed_at, status, exit_code, summary FROM agent_runs WHERE agent_id = ? ORDER BY observed_at DESC LIMIT ?",
+    )
+    .all(agentId, limit) as AgentRunRow[];
 }

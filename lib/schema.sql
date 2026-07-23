@@ -78,3 +78,25 @@ CREATE TABLE IF NOT EXISTS session_notes (
   updated_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_session ON session_notes(session_id);
+
+-- Agent monitor (Phase 3). Registry/status/launchd are read live at snapshot
+-- time (never copied in); only this genuinely-persistent state lives here.
+CREATE TABLE IF NOT EXISTS agent_acks (
+  agent_id    TEXT PRIMARY KEY,
+  acked_at    INTEGER NOT NULL,
+  fingerprint TEXT NOT NULL DEFAULT ''   -- ack applies only while health fingerprint matches
+);
+CREATE TABLE IF NOT EXISTS agent_overrides (
+  agent_id  TEXT PRIMARY KEY,
+  paused    INTEGER NOT NULL DEFAULT 0,
+  paused_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  status      TEXT NOT NULL DEFAULT '',
+  exit_code   INTEGER,
+  summary     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs ON agent_runs(agent_id, observed_at);
