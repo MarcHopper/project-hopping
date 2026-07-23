@@ -10,6 +10,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractLatestTodos } from "../lib/todos.ts";
+import { extractMessages } from "../lib/messages.ts";
+import { resolveLatestSession } from "../lib/db.ts";
 
 const PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 
@@ -175,7 +177,9 @@ function finalize(text, isError, cap) {
  * embedded-base64 line ate the window. Never full-parses (transcripts hit 125MB).
  */
 export function readLatestTodos(sessionId) {
-  const file = findTranscript(sessionId);
+  // Follow a remote-continue fork to the newest transcript in the chain so a
+  // chat's task list stays current after a dashboard/phone continue.
+  const file = findTranscript(resolveLatestSession(sessionId));
   if (!file) return null;
   for (const bytes of [1024 * 1024, 4 * 1024 * 1024]) {
     let lines;
@@ -191,6 +195,41 @@ export function readLatestTodos(sessionId) {
     if (st.size <= bytes) break; // already read the whole file; no point retrying
   }
   return null;
+}
+
+// Cache recent-message reads by transcript mtime so repeated polls are cheap.
+const msgCache = new Map(); // resolvedId -> { mtime, size, messages }
+
+/**
+ * The chat's recent human/assistant messages for the dashboard thread view.
+ * Resolves any resume-fork chain to the newest transcript, tail-reads up to 2MB,
+ * and caches by file mtime+size. Returns { messages, truncated, transcriptSessionId }.
+ */
+export function readRecentMessages(sessionId, { limit = 30 } = {}) {
+  const resolved = resolveLatestSession(sessionId);
+  const file = findTranscript(resolved);
+  if (!file) return { messages: [], truncated: false, transcriptSessionId: resolved };
+  let st;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    return { messages: [], truncated: false, transcriptSessionId: resolved };
+  }
+  const cached = msgCache.get(resolved);
+  if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) {
+    return { messages: cached.messages, truncated: cached.truncated, transcriptSessionId: resolved };
+  }
+  const BYTES = 2 * 1024 * 1024;
+  let lines;
+  try {
+    lines = readTail(file, BYTES).split("\n").filter(Boolean);
+  } catch {
+    return { messages: [], truncated: false, transcriptSessionId: resolved };
+  }
+  const truncated = st.size > BYTES;
+  const messages = extractMessages(lines, { limit });
+  msgCache.set(resolved, { mtime: st.mtimeMs, size: st.size, messages, truncated });
+  return { messages, truncated, transcriptSessionId: resolved };
 }
 
 /** The cwd recorded in the transcript (first line) — used to confirm/repair. */

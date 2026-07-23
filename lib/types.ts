@@ -95,6 +95,9 @@ export interface Session {
   ask: string; // "what it's waiting on" — the last question/sentence
   todos_json: string; // JSON-serialized TodoItem[] (the chat's own task list)
   todos_updated_at: number | null; // epoch ms of the todos snapshot (monotonic guard)
+  remote_continued_at: number | null; // epoch ms of the last dashboard/phone continue (stale-window warning)
+  resumed_to: string; // if a `claude -p --resume` forked a new session id, that id
+  merged_into: string; // set on the headless child row so it never shows as a duplicate chat
 }
 
 // A note the human adds to a chat from the dashboard — the "My notes" checklist,

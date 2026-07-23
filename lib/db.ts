@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_activity INTEGER, last_result TEXT NOT NULL DEFAULT '', slack_thread_ts TEXT NOT NULL DEFAULT '',
   started_at INTEGER NOT NULL DEFAULT 0,
   summary TEXT NOT NULL DEFAULT '', ask TEXT NOT NULL DEFAULT '',
-  todos_json TEXT NOT NULL DEFAULT '[]', todos_updated_at INTEGER
+  todos_json TEXT NOT NULL DEFAULT '[]', todos_updated_at INTEGER,
+  remote_continued_at INTEGER, resumed_to TEXT NOT NULL DEFAULT '',
+  merged_into TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS session_notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
@@ -124,6 +126,10 @@ function migrate(db: DB): void {
     "ALTER TABLE sessions ADD COLUMN ask TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN todos_json TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE sessions ADD COLUMN todos_updated_at INTEGER",
+    // Command Center: remote-continue (resume-fork) tracking
+    "ALTER TABLE sessions ADD COLUMN remote_continued_at INTEGER",
+    "ALTER TABLE sessions ADD COLUMN resumed_to TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN merged_into TEXT NOT NULL DEFAULT ''",
   ];
   for (const sql of alters) {
     try {
@@ -504,6 +510,16 @@ function applySessionEvent(
     ts,
   });
 
+  // Marc typed in the real VS Code window again (interactive agent_running from
+  // the Claude Code hook) — the "continued remotely, window is stale" warning no
+  // longer applies. The headless resume runs under a NEW id, so this only fires
+  // for genuine interactive activity on the original chat.
+  if (type === "agent_running" && payload.source === "claude-code") {
+    db.prepare(
+      "UPDATE sessions SET remote_continued_at = NULL WHERE session_id = ? AND remote_continued_at IS NOT NULL",
+    ).run(sessionId);
+  }
+
   // A todo_update carries the chat's TodoWrite list. Store it guarded by the
   // event timestamp so a slow 60s transcript backfill can never regress a
   // fresher push from the PostToolUse hook.
@@ -686,6 +702,9 @@ interface RawSession {
   ask: string;
   todos_json: string;
   todos_updated_at: number | null;
+  remote_continued_at: number | null;
+  resumed_to: string;
+  merged_into: string;
 }
 
 function toSession(r: RawSession, projectName?: string): Session {
@@ -704,20 +723,69 @@ function toSession(r: RawSession, projectName?: string): Session {
     ask: r.ask ?? "",
     todos_json: r.todos_json ?? "[]",
     todos_updated_at: r.todos_updated_at ?? null,
+    remote_continued_at: r.remote_continued_at ?? null,
+    resumed_to: r.resumed_to ?? "",
+    merged_into: r.merged_into ?? "",
   };
 }
 
-/** Open chats (not ended), newest activity first, with project name joined. */
+/**
+ * Open chats (not ended), newest activity first, with project name joined.
+ * Excludes headless resume-children (merged_into set) so a dashboard/phone
+ * continue never surfaces the `claude -p --resume` fork as a duplicate chat.
+ */
 export function listSessions(): Session[] {
   const rows = getDb()
     .prepare(
       `SELECT s.*, p.name AS project_name
        FROM sessions s JOIN projects p ON p.id = s.project_id
-       WHERE s.status != 'ended'
+       WHERE s.status != 'ended' AND s.merged_into = ''
        ORDER BY s.last_activity DESC`,
     )
     .all() as (RawSession & { project_name: string })[];
   return rows.map((r) => toSession(r, r.project_name));
+}
+
+/**
+ * Link a resume fork: `claude -p --resume <old>` produced a new session id. The
+ * original keeps its dashboard identity (resumed_to points at the child); the
+ * headless child is marked merged_into the original so it never lists as its own
+ * chat. Follow-up continues resolve the chain to the latest id via resolveLatestSession.
+ */
+export function linkResumedSession(oldId: string, newId: string): void {
+  if (!oldId || !newId || oldId === newId) return;
+  const db = getDb();
+  db.prepare("UPDATE sessions SET resumed_to = ? WHERE session_id = ?").run(newId, oldId);
+  // The child row is created by the headless run's own hooks; mark it (upsert so
+  // ordering with those hook events doesn't matter).
+  db.prepare(
+    `INSERT INTO sessions (session_id, project_id, merged_into, started_at, last_activity)
+     SELECT ?, project_id, ?, started_at, last_activity FROM sessions WHERE session_id = ?
+     ON CONFLICT(session_id) DO UPDATE SET merged_into = excluded.merged_into`,
+  ).run(newId, oldId, oldId);
+}
+
+/** Follow resumed_to links to the newest live id in the chain (bounded hops). */
+export function resolveLatestSession(sessionId: string): string {
+  const db = getDb();
+  let id = sessionId;
+  for (let i = 0; i < 5; i++) {
+    const r = db
+      .prepare("SELECT resumed_to FROM sessions WHERE session_id = ?")
+      .get(id) as { resumed_to?: string } | undefined;
+    if (r?.resumed_to) id = r.resumed_to;
+    else break;
+  }
+  return id;
+}
+
+/** Mark that a chat was continued remotely (its open VS Code window is now stale). */
+export function setSessionRemoteContinued(sessionId: string, at: number): void {
+  getDb().prepare("UPDATE sessions SET remote_continued_at = ? WHERE session_id = ?").run(at, sessionId);
+}
+
+export function clearSessionRemoteContinued(sessionId: string): void {
+  getDb().prepare("UPDATE sessions SET remote_continued_at = NULL WHERE session_id = ?").run(sessionId);
 }
 
 export function getSession(sessionId: string): Session | null {

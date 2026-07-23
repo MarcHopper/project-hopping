@@ -56,10 +56,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_result     TEXT NOT NULL DEFAULT '',
   slack_thread_ts TEXT NOT NULL DEFAULT '',
   started_at      INTEGER NOT NULL DEFAULT 0,
-  summary          TEXT NOT NULL DEFAULT '',   -- one-line "what happened" (transcript-derived)
-  ask              TEXT NOT NULL DEFAULT '',   -- "what it's waiting on"
-  todos_json       TEXT NOT NULL DEFAULT '[]', -- the chat's own TodoWrite list, JSON
-  todos_updated_at INTEGER                     -- epoch ms of the todos snapshot
+  summary             TEXT NOT NULL DEFAULT '',   -- one-line "what happened" (transcript-derived)
+  ask                 TEXT NOT NULL DEFAULT '',   -- "what it's waiting on"
+  todos_json          TEXT NOT NULL DEFAULT '[]', -- the chat's own TodoWrite list, JSON
+  todos_updated_at    INTEGER,                    -- epoch ms of the todos snapshot
+  remote_continued_at INTEGER,                    -- epoch ms of last dashboard/phone continue
+  resumed_to          TEXT NOT NULL DEFAULT '',   -- forked session id from `claude -p --resume`
+  merged_into         TEXT NOT NULL DEFAULT ''    -- set on the headless child so it hides as a dup
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions(slack_thread_ts);

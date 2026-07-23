@@ -30,10 +30,11 @@ import {
 import { startGitWatch } from "./gitwatch.mjs";
 import { notify, desktop, slackPost, slackReply } from "./notify.mjs";
 import { waitingCard } from "./cards.mjs";
-import { readLastResult, readSessionName, readLatestTodos } from "./transcript.mjs";
+import { readLastResult, readSessionName, readLatestTodos, readRecentMessages } from "./transcript.mjs";
 import { userIsActive } from "./presence.mjs";
 import { startMirror, ingestQueuedActions } from "./mirror.mjs";
 import { buildSnapshot, viewSession } from "./stateView.mjs";
+import { runContinue } from "./runner.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.HOPPING_HUB_PORT ?? 4319);
@@ -197,6 +198,36 @@ const server = http.createServer(async (req, res) => {
       else return send(res, 400, { ok: false, error: "bad note op" });
       mirrorNow();
       return send(res, 200, { ok: true, notes: listSessionNotes(id) });
+    }
+
+    // GET /session/<id>/messages?limit=30 — recent human/assistant messages
+    // (chain-resolved through any remote-continue fork).
+    const mMsgs = url.pathname.match(/^\/session\/([^/]+)\/messages$/);
+    if (req.method === "GET" && mMsgs) {
+      const id = decodeURIComponent(mMsgs[1]);
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 30));
+      const r = readRecentMessages(id, { limit });
+      return send(res, 200, {
+        ok: true,
+        sessionId: id,
+        transcript_session_id: r.transcriptSessionId,
+        messages: r.messages,
+        truncated: r.truncated,
+      });
+    }
+
+    // POST /session/<id>/continue {prompt} — resume this chat headlessly with a
+    // new instruction (reuses the runner: per-session lock, budget, fork-linking).
+    const mCont = url.pathname.match(/^\/session\/([^/]+)\/continue$/);
+    if (req.method === "POST" && mCont) {
+      const id = decodeURIComponent(mCont[1]);
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+      if (!prompt) return send(res, 400, { ok: false, error: "prompt required" });
+      if (!getSession(id)) return send(res, 404, { ok: false, error: "no such session" });
+      runContinue({ sessionId: id, prompt }).catch(() => {}); // async; result lands on next poll
+      mirrorNow();
+      return send(res, 200, { ok: true, started: true });
     }
 
     if (req.method === "POST" && url.pathname === "/event") {

@@ -8,7 +8,14 @@
 // the run happens in Marc's own repo with a capped budget.
 
 import { spawn } from "node:child_process";
-import { getSession, getSessionByThreadTs, setSessionResult } from "../lib/db.ts";
+import {
+  getSession,
+  getSessionByThreadTs,
+  setSessionResult,
+  linkResumedSession,
+  resolveLatestSession,
+  setSessionRemoteContinued,
+} from "../lib/db.ts";
 import { slackReply } from "./notify.mjs";
 
 const running = new Set(); // session_ids currently resuming
@@ -44,15 +51,25 @@ export async function runContinue(a) {
 
   running.add(sess.session_id);
   active++;
+  // Mark the dashboard-visible chat as continued remotely (its open VS Code
+  // window, if any, is now behind) until Marc types in the real window again.
+  try {
+    setSessionRemoteContinued(sess.session_id, Date.now());
+  } catch {
+    /* best-effort */
+  }
   if (thread) await slackReply(thread, { text: "🤖 working…" });
 
   const budget = String(process.env.HOPPING_CONTINUE_BUDGET_USD ?? "1.0");
   const bin = process.env.HOPPING_CLAUDE_BIN || "claude";
   const cwd = sess.cwd || process.cwd();
+  // A prior remote continue may have forked a new id; resume the newest in the
+  // chain so successive replies build on each other rather than the stale root.
+  const resumeTarget = resolveLatestSession(sess.session_id);
   const args = [
     "-p",
     "--resume",
-    sess.session_id,
+    resumeTarget,
     "--permission-mode",
     "bypassPermissions",
     "--output-format",
@@ -85,12 +102,24 @@ export async function runContinue(a) {
     running.delete(sess.session_id);
     active--;
     let text = "";
+    let newId = "";
     try {
       const j = JSON.parse(out);
       text = typeof j.result === "string" ? j.result : out;
+      if (typeof j.session_id === "string") newId = j.session_id;
     } catch {
       text = out || err || `(exit ${code})`;
     }
+    // The headless resume forks a NEW session id; link it so the continuation's
+    // transcript is what the dashboard reads, without listing a duplicate chat.
+    if (newId && newId !== resumeTarget) {
+      try {
+        linkResumedSession(resumeTarget, newId);
+      } catch {
+        /* best-effort */
+      }
+    }
+    // The result belongs to the dashboard-visible (root) chat.
     try {
       setSessionResult(sess.session_id, text, "waiting");
     } catch {
