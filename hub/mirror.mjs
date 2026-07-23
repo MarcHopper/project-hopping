@@ -6,10 +6,12 @@
 import {
   cloudConfigured,
   cloudSetState,
+  cloudSetKey,
   cloudDrainActions,
 } from "../lib/cloud.ts";
 import {
   getProjectsWithTally,
+  listSessions,
   setTallyMode,
   resetTallies,
   updateNotifySettings,
@@ -20,6 +22,7 @@ import {
   deleteSessionNote,
 } from "../lib/db.ts";
 import { rankProjects } from "../lib/rankProjects.ts";
+import { readRecentMessages } from "./transcript.mjs";
 import { slackPost } from "./notify.mjs";
 import { standupCard } from "./cards.mjs";
 import { runContinue } from "./runner.mjs";
@@ -34,6 +37,60 @@ export function startMirror() {
     cloudSetState(buildSnapshot()).catch(() => {});
   };
   startMirror.push(); // initial push on boot
+}
+
+// Per-chat message tails for the phone (which can't hit the local messages
+// endpoint). Separate key + slower cadence than the main state — transcript
+// reads are heavy — and hash-skipped so an idle minute costs nothing.
+const TAILS_DAY_MS = 24 * 3600 * 1000;
+const TAILS_MSG_LIMIT = 10;
+const TAILS_TEXT_CAP = 400;
+const TAILS_MAX_BYTES = 400 * 1024;
+let lastTailsHash = "";
+
+function buildTails() {
+  const now = Date.now();
+  const sessions = listSessions()
+    .filter((s) => s.last_activity && now - s.last_activity < TAILS_DAY_MS)
+    .sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0));
+  const out = {};
+  let bytes = 0;
+  for (const s of sessions) {
+    let r;
+    try {
+      r = readRecentMessages(s.session_id, { limit: TAILS_MSG_LIMIT }); // mtime-cached
+    } catch {
+      continue;
+    }
+    const messages = r.messages.map((m) => ({
+      role: m.role,
+      text: m.text.length > TAILS_TEXT_CAP ? m.text.slice(0, TAILS_TEXT_CAP) + "…" : m.text,
+      ts: m.ts,
+    }));
+    const entry = { messages, truncated: r.truncated };
+    const sz = JSON.stringify(entry).length + s.session_id.length + 8;
+    if (bytes + sz > TAILS_MAX_BYTES) break; // drop the oldest sessions over budget
+    out[s.session_id] = entry;
+    bytes += sz;
+  }
+  return { sessions: out, generatedAt: now };
+}
+
+export function startTailsMirror() {
+  if (!cloudConfigured()) return;
+  const push = () => {
+    try {
+      const tails = buildTails();
+      const hash = JSON.stringify(tails.sessions);
+      if (hash === lastTailsHash) return; // nothing changed — skip the write
+      lastTailsHash = hash;
+      cloudSetKey("tails", tails).catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  };
+  push();
+  setInterval(push, 30_000);
 }
 
 const NOTIFY_KEYS = [

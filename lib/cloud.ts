@@ -50,6 +50,23 @@ export async function cloudGetState<T = unknown>(): Promise<T | null> {
   }
 }
 
+// Generic namespaced key access (e.g. suffix "tails" → hopping:tails). Used for
+// the message-tails mirror, kept separate from the main state so per-poll reads
+// stay small and the heavier tails push runs on its own slower cadence.
+export async function cloudSetKey(suffix: string, value: unknown): Promise<void> {
+  await redis(["SET", `hopping:${suffix}`, JSON.stringify(value)]);
+}
+
+export async function cloudGetKey<T = unknown>(suffix: string): Promise<T | null> {
+  const r = (await redis(["GET", `hopping:${suffix}`])) as string | null;
+  if (!r) return null;
+  try {
+    return JSON.parse(r) as T;
+  } catch {
+    return null;
+  }
+}
+
 export interface QueuedAction {
   // phone-app shape (back-compat)
   projectId?: string;

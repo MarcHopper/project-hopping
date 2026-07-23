@@ -32,7 +32,7 @@ import { notify, desktop, slackPost, slackReply } from "./notify.mjs";
 import { waitingCard } from "./cards.mjs";
 import { readLastResult, readSessionName, readLatestTodos, readRecentMessages } from "./transcript.mjs";
 import { userIsActive } from "./presence.mjs";
-import { startMirror, ingestQueuedActions } from "./mirror.mjs";
+import { startMirror, startTailsMirror, ingestQueuedActions } from "./mirror.mjs";
 import { buildSnapshot, viewSession } from "./stateView.mjs";
 import { runContinue } from "./runner.mjs";
 
@@ -314,6 +314,7 @@ server.listen(PORT, HOST, () => {
   setInterval(refreshSessions, 60_000);
   startGitWatch(ingest); // watch repos for commits
   startMirror(); // start cloud mirror (no-op if not configured)
+  startTailsMirror(); // message tails for the phone (30s, hash-skipped)
   // Drain phone actions from the cloud queue back into the local source of truth.
   setInterval(() => ingestQueuedActions(ingest).catch(() => {}), 2000);
   // Background notification timers (nudge + daily neglect digest).
