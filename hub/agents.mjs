@@ -18,6 +18,7 @@ import {
   listAgentRuns,
 } from "../lib/db.ts";
 import { cloudGetKey } from "../lib/cloud.ts";
+import { runCloudProbe } from "./cloudProbes.mjs";
 
 const HOME = os.homedir();
 const AGENTS_DIR = path.join(HOME, "hop-tools", "agents");
@@ -128,6 +129,13 @@ export async function collectAgents(force = false) {
     const status = statusFor(entry.id);
     const isCloud = !label && /gh|github|vercel|cron|sentinel|uptime|heartbeat/i.test(entry.id + (entry.schedule || ""));
     const kind = label ? "launchd" : entry.kind || (isCloud ? "heartbeat" : "launchd");
+    // Cloud entries: a typed `probe` in the registry reads the service's own ledger
+    // (cloudProbes.mjs); the legacy hopping:heartbeat:<id> key stays as the fallback.
+    let probe = null;
+    if (kind !== "launchd") {
+      probe = entry.probe ? await runCloudProbe(entry.probe) : null;
+      if (!probe) probe = await heartbeatProbe(entry.id);
+    }
     inputs.push({
       id: entry.id,
       display_name: entry.display_name || entry.id,
@@ -136,12 +144,12 @@ export async function collectAgents(force = false) {
       label: label || undefined,
       schedule_text: entry.schedule || "",
       calendar: plist?.calendar || undefined,
-      interval: plist?.interval || undefined,
+      interval: plist?.interval || entry.interval_sec || undefined,
       status,
       running: lc ? lc.pid != null : false,
       last_exit: lc ? lc.exit : null,
       loaded: !!lc,
-      probe: kind === "heartbeat" ? await heartbeatProbe(entry.id) : null,
+      probe,
       grace_min: entry.grace_min,
       log_path: entry.log_path || status?.log_path || plist?.stderr || "",
     });

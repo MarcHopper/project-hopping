@@ -168,6 +168,14 @@ function healthOne(
     return { health: "stale", reasons, lastRun, nextExpected };
   }
 
+  // 3.5) Cloud probe reports the run itself failed (e.g. a GitHub Actions run concluded
+  //      "failure"). Ranks like a nonzero launchd exit: the service ran and broke — but it
+  //      sits after the staleness rules so a dead ticker reads "stale", not a stale "error".
+  if (a.probe && a.probe.ok === false) {
+    reasons.push("probe reports last run failed");
+    return { health: "error", reasons, lastRun, nextExpected };
+  }
+
   // 4) Agent asked for attention.
   const ls = a.status?.last_status;
   const nr = a.status?.needs_review?.length ?? 0;
