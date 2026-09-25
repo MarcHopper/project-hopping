@@ -4,6 +4,8 @@
 // Dependency-free (global fetch only) so it bundles cleanly on Vercel with no
 // native modules — `better-sqlite3` is never imported on the cloud path.
 
+import { loadPrivateIds, stripPrivateState, stripPrivateTails } from "./privateSessions";
+
 const STATE_KEY = "hopping:state";
 const ACTIONS_KEY = "hopping:actions";
 
@@ -36,8 +38,15 @@ async function redis(command: (string | number)[]): Promise<unknown> {
   return json.result;
 }
 
+// Session names from the last state push, so the tails filter can match a
+// "notes…" chat by name (tails are keyed by id only).
+const lastNames = new Map<string, string>();
+
 export async function cloudSetState(state: unknown): Promise<void> {
-  await redis(["SET", STATE_KEY, JSON.stringify(state)]);
+  const st = state as { sessions?: { session_id?: string; name?: string | null }[] };
+  for (const s of st?.sessions ?? []) if (s.session_id) lastNames.set(s.session_id, s.name ?? "");
+  const clean = stripPrivateState(state, await loadPrivateIds());
+  await redis(["SET", STATE_KEY, JSON.stringify(clean)]);
 }
 
 export async function cloudGetState<T = unknown>(): Promise<T | null> {
@@ -54,6 +63,7 @@ export async function cloudGetState<T = unknown>(): Promise<T | null> {
 // the message-tails mirror, kept separate from the main state so per-poll reads
 // stay small and the heavier tails push runs on its own slower cadence.
 export async function cloudSetKey(suffix: string, value: unknown): Promise<void> {
+  if (suffix === "tails") value = stripPrivateTails(value, await loadPrivateIds(), lastNames);
   await redis(["SET", `hopping:${suffix}`, JSON.stringify(value)]);
 }
 
