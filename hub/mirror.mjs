@@ -102,15 +102,18 @@ const NOTIFY_KEYS = [
   "neglect_days",
 ];
 
+// Returns the number of actions drained this tick (0 if the queue was empty or
+// the cloud is unconfigured/unreachable), so the caller can back off its poll
+// when the queue is idle instead of hammering a blind LPOP every 2s.
 export async function ingestQueuedActions(ingest) {
-  if (!cloudConfigured()) return;
+  if (!cloudConfigured()) return 0;
   let actions = [];
   try {
     actions = await cloudDrainActions();
   } catch {
-    return;
+    return 0;
   }
-  if (!actions.length) return;
+  if (!actions.length) return 0;
 
   for (const a of actions) {
     try {
@@ -137,6 +140,7 @@ export async function ingestQueuedActions(ingest) {
     }
   }
   startMirror.push?.(); // ensure a fresh snapshot after settings-only actions too
+  return actions.length;
 }
 
 // Slack interactive actions (Phase 7/8). Each still flows through the hub.

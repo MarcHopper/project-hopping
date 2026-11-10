@@ -354,7 +354,23 @@ server.listen(PORT, HOST, () => {
     .catch(() => {});
   setInterval(() => collectAgents(true).catch(() => {}), 60_000);
   // Drain phone actions from the cloud queue back into the local source of truth.
-  setInterval(() => ingestQueuedActions(ingest).catch(() => {}), 2000);
+  // Adaptive backoff: poll fast (2s) while actions are flowing so phone taps stay
+  // responsive, then ease off to 15s when the queue is idle. A fixed 2s poll here
+  // was firing a blind LPOP ~43,200x/day against the shared Upstash DB even when
+  // the (usually empty) queue had nothing — it single-handedly blew the 500k/mo cap.
+  const DRAIN_MIN_MS = 2_000; // responsive while the phone is active
+  const DRAIN_MAX_MS = 15_000; // idle ceiling
+  let drainDelay = DRAIN_MIN_MS;
+  (async function drainLoop() {
+    let drained = 0;
+    try {
+      drained = await ingestQueuedActions(ingest);
+    } catch {
+      /* never let a drain error kill the loop */
+    }
+    drainDelay = drained ? DRAIN_MIN_MS : Math.min(drainDelay * 2, DRAIN_MAX_MS);
+    setTimeout(drainLoop, drainDelay);
+  })();
   // Background notification timers (nudge + daily neglect digest).
   import("./schedules.mjs")
     .then((m) => m.startSchedules(notify))
